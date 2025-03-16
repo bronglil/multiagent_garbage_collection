@@ -1,3 +1,4 @@
+```
 Vehicle created: Collector 1 (ID: 1), capacity: 150.0, speed: 1.0
 Vehicle created: Collector 2 (ID: 2), capacity: 150.0, speed: 1.0
 Vehicle created: Collector 3 (ID: 3), capacity: 150.0, speed: 1.0
@@ -192,3 +193,4 @@ Vehicle 2 (Collector 2) targeting bin 6 (RESIDENTIAL) at distance 12.62
 Vehicle 3 (Collector 3) reached bin 7
 TaskCoordinator: Bin 7 now being serviced by Vehicle 3
 TaskCoordinator: Bin 7 released by Vehicle 3
+```
