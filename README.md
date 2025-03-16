@@ -194,3 +194,7 @@ Vehicle 3 (Collector 3) reached bin 7
 TaskCoordinator: Bin 7 now being serviced by Vehicle 3
 TaskCoordinator: Bin 7 released by Vehicle 3
 ```
+
+
+<img width="1114" alt="image" src="https://github.com/user-attachments/assets/4a8e2985-166d-40c5-b699-6d110c84ce3e" />
+
