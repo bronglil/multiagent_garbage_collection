@@ -1,0 +1,35 @@
+package garbageSimulation;
+
+/**
+ * Represents a point of interest in the simulation that vehicles can discover and visit.
+ */
+public class InterestPoint {
+    private int id;
+    private String type;
+    private boolean isVisited = false;
+    
+    public InterestPoint(int id, String type) {
+        this.id = id;
+        this.type = type;
+    }
+    
+    public void markAsVisited() {
+        this.isVisited = true;
+    }
+    
+    public boolean isVisited() {
+        return isVisited;
+    }
+    
+    public void resetVisited() {
+        this.isVisited = false;
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public String getType() {
+        return type;
+    }
+}

@@ -1,0 +1,12 @@
+<context id="GarbageSimulation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="http://repast.org/scenario/context">
+	
+	<!-- Define the root context -->
+	<projection type="continuous space" id="space"/>
+	
+	<!-- Define vehicles context -->
+	<context id="vehicles">
+		<projection type="continuous space" id="vehicleSpace"/>
+	</context>
+
+</context>

@@ -1,0 +1,695 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Collections;
+import java.util.Comparator;
+
+/**
+ * Vehicle agent that collects garbage from bins.
+ * Improved implementation with better coordination and movement.
+ */
+public class Vehicle {
+    // Spatial information
+    private ContinuousSpace<Object> space;
+    private NdPoint previousPosition;
+    private double direction; // in radians
+    
+    // Vehicle information
+    private int id;
+    private String type;
+    private double speed;
+    private double capacity = 150.0; // Standard capacity for all vehicles
+    private double currentLoad = 0.0;
+    
+    // Performance metrics
+    private int collectionsCompleted = 0;
+    private double totalDistanceTraveled = 0;
+    
+    // Communication
+    private List<Message> inbox = new ArrayList<>();
+    private static final double COMMUNICATION_RADIUS = 20.0;
+    
+    // Known environment information
+    private Map<Integer, BinInfo> knownBins = new HashMap<>();
+    
+    // Current target
+    private Integer targetBinId = null;
+    private NdPoint targetDestination = null;
+    
+    // Depot/dump point information
+    private NdPoint depotLocation;
+    private boolean returningToDepot = false;
+    
+    // Collection state
+    private boolean isCollectingFromBin = false;
+    private int collectionCounter = 0;
+    private static final int COLLECTION_DURATION = 10;
+    
+    // Status tracking
+    private String status = "idle";
+    
+    // Reference to the task coordinator
+    private TaskCoordinator coordinator;
+    
+    /**
+     * Class to store information about a known bin.
+     */
+    private class BinInfo {
+        int id;
+        double x;
+        double y;
+        double fillLevel;
+        double capacity;
+        String areaType;
+        boolean isUrgent;
+        long lastUpdated;
+        
+        BinInfo(int id, double x, double y, double fillLevel, double capacity, String areaType, boolean isUrgent) {
+            this.id = id;
+            this.x = x;
+            this.y = y;
+            this.fillLevel = fillLevel;
+            this.capacity = capacity;
+            this.areaType = areaType;
+            this.isUrgent = isUrgent;
+            this.lastUpdated = System.currentTimeMillis();
+        }
+        
+        double getFillPercentage() {
+            return (fillLevel / capacity) * 100;
+        }
+        
+        NdPoint getLocation() {
+            return new NdPoint(x, y);
+        }
+        
+        boolean isStale() {
+            return System.currentTimeMillis() - lastUpdated > 30000; // 30 seconds
+        }
+        
+        @Override
+        public String toString() {
+            return "Bin " + id + " (" + areaType + "): " + String.format("%.1f", getFillPercentage()) + "% full";
+        }
+    }
+    
+    /**
+     * Create a new vehicle.
+     * 
+     * @param space Continuous space the vehicle exists in
+     * @param id Unique identifier for this vehicle
+     * @param type Type description of this vehicle (for labeling only)
+     * @param speed Movement speed of the vehicle
+     */
+    public Vehicle(ContinuousSpace<Object> space, int id, String type, double speed) {
+        this.space = space;
+        this.id = id;
+        this.type = type;
+        this.speed = speed;
+        this.direction = Math.random() * 2 * Math.PI;
+        
+        // Set depot location to center of the map
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        this.depotLocation = new NdPoint(width/2, height/2);
+        
+        // Get task coordinator
+        this.coordinator = TaskCoordinator.getInstance();
+        
+        System.out.println("Vehicle created: " + type + " (ID: " + id + "), " + 
+                           "capacity: " + capacity + ", speed: " + speed);
+    }
+    
+    /**
+     * Main step method for vehicle behavior.
+     * Scheduled to run every tick starting from tick 1.
+     */
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // Track current position for distance calculation
+        NdPoint currentPosition = space.getLocation(this);
+        if (previousPosition != null) {
+            totalDistanceTraveled += space.getDistance(previousPosition, currentPosition);
+        }
+        previousPosition = currentPosition;
+        
+        // Process any messages in inbox
+        processMessages();
+        
+        // Remove stale bin information
+        cleanStaleData();
+        
+        // Check if collecting from bin
+        if (isCollectingFromBin) {
+            collectionCounter++;
+            if (collectionCounter >= COLLECTION_DURATION) {
+                finishCollection();
+            } else {
+                System.out.println("Vehicle " + id + " (" + type + ") collecting from bin " + 
+                                 targetBinId + ": " + collectionCounter + "/" + COLLECTION_DURATION);
+                return; // Skip rest of step while collecting
+            }
+        }
+        
+        // Check if vehicle is nearly full and needs to return to depot
+        if (currentLoad >= capacity * 0.9 && !returningToDepot) {
+            returnToDepot();
+            return;
+        }
+        
+        // Check if we've reached the depot
+        if (returningToDepot) {
+            checkDepotReached();
+            return;
+        }
+        
+        // If no target, find a new one
+        if (targetBinId == null) {
+            findNewTarget();
+        }
+        
+        // Move the vehicle
+        moveVehicle();
+        
+        // Check if we've reached our target bin
+        if (targetBinId != null) {
+            checkBinReached();
+        }
+        
+        // Share information with nearby vehicles
+        shareInfoWithNearbyVehicles();
+    }
+    
+    /**
+     * Process all messages in the inbox.
+     */
+    private void processMessages() {
+        if (inbox.isEmpty()) {
+            return;
+        }
+        
+        // Process only BIN_BROADCAST messages
+        for (Message msg : inbox) {
+            if (msg.getType().equals("BIN_BROADCAST")) {
+                handleBinBroadcast(msg);
+            } else if (msg.getType().equals("BIN_INFO")) {
+                handleBinInfo(msg);
+            }
+        }
+        
+        // Clear inbox
+        inbox.clear();
+    }
+    
+    /**
+     * Handle a bin broadcast message.
+     */
+    private void handleBinBroadcast(Message msg) {
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 7 && parts[0].equals("BIN_STATUS")) {
+            int binId = Integer.parseInt(parts[1]);
+            double binX = Double.parseDouble(parts[2]);
+            double binY = Double.parseDouble(parts[3]);
+            double fillLevel = Double.parseDouble(parts[4]);
+            double capacity = Double.parseDouble(parts[5]);
+            String areaType = parts[6];
+            boolean isUrgent = (parts.length >= 8 && parts[7].equals("URGENT"));
+            
+            // Only consider bins with fill level >= 70%
+            double fillPercentage = (fillLevel/capacity) * 100;
+            if (fillPercentage >= 70.0) {
+                // Store bin info
+                BinInfo binInfo = new BinInfo(binId, binX, binY, fillLevel, capacity, areaType, isUrgent);
+                knownBins.put(binId, binInfo);
+                
+                // Calculate distance to bin
+                NdPoint myPoint = space.getLocation(this);
+                NdPoint binPoint = new NdPoint(binX, binY);
+                double distance = space.getDistance(myPoint, binPoint);
+                
+                System.out.println("Vehicle " + id + " (" + type + ") received broadcast from bin " + 
+                                 binId + " (" + areaType + "), " + String.format("%.1f", fillPercentage) + 
+                                 "% full, distance: " + String.format("%.2f", distance));
+                
+                // If we have no target and bin is close or urgent, try to target it
+                if (targetBinId == null && !isCollectingFromBin && !returningToDepot) {
+                    // Only target if very close or urgent
+                    boolean shouldTarget = (distance < 10.0) || (isUrgent && distance < 20.0);
+                    
+                    if (shouldTarget && hasCapacityFor(fillLevel)) {
+                        // Try to get assignment via coordinator
+                        if (coordinator.requestBinAssignment(id, binId)) {
+                            targetBin(binId, binPoint);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Handle bin information shared by another vehicle
+     */
+    private void handleBinInfo(Message msg) {
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 7) {
+            int binId = Integer.parseInt(parts[1]);
+            double binX = Double.parseDouble(parts[2]);
+            double binY = Double.parseDouble(parts[3]);
+            double fillLevel = Double.parseDouble(parts[4]);
+            double capacity = Double.parseDouble(parts[5]);
+            String areaType = parts[6];
+            boolean isUrgent = (parts.length >= 8 && parts[7].equals("URGENT"));
+            
+            // Only consider bins with fill level >= 70%
+            if ((fillLevel/capacity) * 100 >= 70.0 && coordinator.isBinAvailable(binId)) {
+                BinInfo binInfo = new BinInfo(binId, binX, binY, fillLevel, capacity, areaType, isUrgent);
+                knownBins.put(binId, binInfo);
+            }
+        }
+    }
+    
+    /**
+     * Remove stale data from vehicle's knowledge base.
+     */
+    private void cleanStaleData() {
+        // Remove stale bin information
+        List<Integer> staleBins = new ArrayList<>();
+        for (Map.Entry<Integer, BinInfo> entry : knownBins.entrySet()) {
+            if (entry.getValue().isStale()) {
+                staleBins.add(entry.getKey());
+            }
+        }
+        
+        for (Integer binId : staleBins) {
+            knownBins.remove(binId);
+        }
+    }
+    
+    /**
+     * Find a new bin to target based on distance and fill level.
+     */
+    private void findNewTarget() {
+        if (returningToDepot || isCollectingFromBin || targetBinId != null) {
+            return;
+        }
+        
+        // Get current position
+        NdPoint myPoint = space.getLocation(this);
+        
+        // Find best bin to target
+        BinInfo bestBin = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        
+        for (BinInfo bin : knownBins.values()) {
+            // Skip bins that aren't available
+            if (!coordinator.isBinAvailable(bin.id)) {
+                continue;
+            }
+            
+            // Skip if we don't have capacity
+            if (!hasCapacityFor(bin.fillLevel)) {
+                continue;
+            }
+            
+            // Skip if recently emptied
+            if (coordinator.wasRecentlyEmptied(bin.id)) {
+                continue;
+            }
+            
+            // Calculate distance
+            double distance = space.getDistance(myPoint, bin.getLocation());
+            
+            // Calculate score (prioritizing closer bins and higher fill levels)
+            double distanceScore = 1000.0 / (distance * distance + 1.0); // Inverse square distance
+            double fillScore = bin.getFillPercentage() / 100.0;  // 0.0 - 1.0
+            double urgencyBonus = bin.isUrgent ? 1.5 : 1.0;      // 50% bonus for urgent bins
+            
+            double score = distanceScore * (0.7 + 0.3 * fillScore) * urgencyBonus;
+            
+            if (score > bestScore) {
+                bestScore = score;
+                bestBin = bin;
+            }
+        }
+        
+        // Target the best bin if found
+        if (bestBin != null) {
+            // Try to get assignment via coordinator
+            if (coordinator.requestBinAssignment(id, bestBin.id)) {
+                targetBin(bestBin.id, bestBin.getLocation());
+            }
+        }
+    }
+    
+    /**
+     * Target a specific bin for collection.
+     */
+    private void targetBin(int binId, NdPoint binLocation) {
+        // Set as our target
+        targetBinId = binId;
+        targetDestination = binLocation;
+        
+        // Update status
+        BinInfo binInfo = knownBins.get(binId);
+        String areaType = (binInfo != null) ? binInfo.areaType : "UNKNOWN";
+        boolean isUrgent = (binInfo != null) && binInfo.isUrgent;
+        double distance = space.getDistance(space.getLocation(this), binLocation);
+        
+        System.out.println("Vehicle " + id + " (" + type + ") targeting bin " + binId + 
+                          " (" + areaType + ")" + (isUrgent ? " (URGENT)" : "") + 
+                          " at distance " + String.format("%.2f", distance));
+        
+        status = "heading to bin " + binId;
+    }
+    
+    /**
+     * Check if vehicle has reached its target bin.
+     */
+    private void checkBinReached() {
+        if (targetBinId == null || targetDestination == null) {
+            return;
+        }
+        
+        NdPoint myPoint = space.getLocation(this);
+        double distance = space.getDistance(myPoint, targetDestination);
+        
+        // If we're close enough to the bin
+        if (distance < 1.0) {
+            System.out.println("Vehicle " + id + " (" + type + ") reached bin " + targetBinId);
+            
+            // Try to mark the bin as being serviced
+            if (!markBinAsBeingServiced()) {
+                System.out.println("Vehicle " + id + " (" + type + ") couldn't mark bin " + 
+                                 targetBinId + " as serviced - bin not found or already serviced");
+                releaseTarget();
+                return;
+            }
+            
+            // Start collection process
+            isCollectingFromBin = true;
+            collectionCounter = 0;
+            status = "collecting from bin " + targetBinId;
+        }
+    }
+    
+    /**
+     * Mark a bin as being serviced.
+     * 
+     * @return true if successfully marked, false otherwise
+     */
+    private boolean markBinAsBeingServiced() {
+        // First check with coordinator
+        if (!coordinator.markBinBeingServiced(id, targetBinId)) {
+            return false;
+        }
+        
+        // Then mark the actual bin object
+        Context<Object> context = ContextUtils.getContext(this);
+        
+        for (Object obj : context) {
+            if (obj instanceof GarbageBin && ((GarbageBin) obj).getId() == targetBinId) {
+                GarbageBin bin = (GarbageBin) obj;
+                
+                // Check if already being serviced
+                if (bin.isBeingServiced()) {
+                    return false;
+                }
+                
+                // Mark it
+                bin.markAsBeingServiced();
+                return true;
+            }
+        }
+        
+        return false; // Bin not found
+    }
+    
+    /**
+     * Release the currently targeted bin.
+     */
+    private void releaseTarget() {
+        if (targetBinId == null) return;
+        
+        coordinator.releaseBin(id, targetBinId);
+        
+        System.out.println("Vehicle " + id + " (" + type + ") releasing target bin " + targetBinId);
+        
+        targetBinId = null;
+        targetDestination = null;
+        status = "seeking target";
+    }
+    
+    /**
+     * Finish the collection process for the current bin.
+     */
+    private void finishCollection() {
+        isCollectingFromBin = false;
+        collectionCounter = 0;
+        
+        if (targetBinId == null) {
+            System.out.println("Vehicle " + id + " (" + type + ") finished collecting but has no target bin ID");
+            return;
+        }
+        
+        // Empty the bin and update vehicle load
+        double collectedAmount = emptyTargetBin();
+        
+        // Update our load (cap at capacity)
+        currentLoad = Math.min(capacity, currentLoad + collectedAmount);
+        
+        // Track completion
+        collectionsCompleted++;
+        
+        // Release target
+        releaseTarget();
+        
+        // Check if we need to return to depot
+        if (currentLoad >= capacity * 0.9) {
+            returnToDepot();
+        } else {
+            // Immediately look for a new target if we're not returning to depot
+            findNewTarget();
+        }
+    }
+    
+    /**
+     * Empty the target bin.
+     * 
+     * @return Amount collected from the bin
+     */
+    private double emptyTargetBin() {
+        Context<Object> context = ContextUtils.getContext(this);
+        double collectedAmount = 0;
+        
+        for (Object obj : context) {
+            if (obj instanceof GarbageBin && ((GarbageBin) obj).getId() == targetBinId) {
+                GarbageBin bin = (GarbageBin) obj;
+                double fillLevel = bin.getFillLevel();
+                double availableCapacity = capacity - currentLoad;
+                
+                if (fillLevel <= availableCapacity) {
+                    // Can completely empty the bin
+                    collectedAmount = bin.emptyBin();
+                    System.out.println("Vehicle " + id + " (" + type + ") completely emptied bin " + targetBinId);
+                } else {
+                    // Can only partially empty the bin
+                    collectedAmount = bin.reduceLevel(availableCapacity);
+                    System.out.println("Vehicle " + id + " (" + type + ") partially emptied bin " + targetBinId + 
+                                     " - vehicle now at " + String.format("%.1f", (currentLoad/capacity*100)) + "% capacity");
+                }
+                break;
+            }
+        }
+        
+        return collectedAmount;
+    }
+    
+    /**
+     * Start returning to the depot.
+     */
+    private void returnToDepot() {
+        // Clear any current target
+        if (targetBinId != null) {
+            releaseTarget();
+        }
+        
+        // Set depot as destination
+        targetDestination = depotLocation;
+        returningToDepot = true;
+        status = "returning to depot";
+        
+        System.out.println("Vehicle " + id + " (" + type + ") returning to depot with " + 
+                         String.format("%.1f", (currentLoad/capacity*100)) + "% load");
+    }
+    
+    /**
+     * Check if vehicle has reached the depot.
+     */
+    private void checkDepotReached() {
+        if (!returningToDepot) return;
+        
+        NdPoint myPoint = space.getLocation(this);
+        double distance = space.getDistance(myPoint, depotLocation);
+        
+        if (distance < 1.0) {
+            System.out.println("Vehicle " + id + " (" + type + ") reached depot - unloading " + 
+                             String.format("%.1f", currentLoad) + " units");
+            
+            // Empty the vehicle
+            currentLoad = 0.0;
+            returningToDepot = false;
+            targetDestination = null;
+            status = "unloaded at depot";
+            
+            // Immediately look for a new target
+            findNewTarget();
+        }
+    }
+    
+    /**
+     * Move the vehicle toward its destination or randomly if no destination.
+     */
+    private void moveVehicle() {
+        NdPoint myPoint = space.getLocation(this);
+        double x, y;
+        
+        if (targetDestination != null) {
+            // Move toward destination
+            double targetX = targetDestination.getX();
+            double targetY = targetDestination.getY();
+            
+            // Calculate direction vector
+            double dx = targetX - myPoint.getX();
+            double dy = targetY - myPoint.getY();
+            
+            // Handle wrapping around the edges
+            double width = space.getDimensions().getWidth();
+            double height = space.getDimensions().getHeight();
+            
+            // Check if it's shorter to go around the edge
+            if (dx > width / 2) dx -= width;
+            else if (dx < -width / 2) dx += width;
+            if (dy > height / 2) dy -= height;
+            else if (dy < -height / 2) dy += height;
+            
+            // Update direction to point toward target
+            direction = Math.atan2(dy, dx);
+            
+            // Calculate new position with clamped speed to prevent overshooting
+            double distanceToTarget = Math.sqrt(dx*dx + dy*dy);
+            double moveDist = Math.min(speed, distanceToTarget); // Don't overshoot target
+            
+            x = myPoint.getX() + Math.cos(direction) * moveDist;
+            y = myPoint.getY() + Math.sin(direction) * moveDist;
+            
+            if (targetBinId != null) {
+                // Moving to a bin
+                status = "moving to bin " + targetBinId;
+            } else if (returningToDepot) {
+                // Moving to depot
+                status = "moving to depot";
+            } else {
+                // Moving to some other target
+                status = "moving to target";
+            }
+        } else {
+            // No target - random movement
+            // Occasionally change direction
+            if (Math.random() < 0.05) {
+                direction = Math.random() * 2 * Math.PI;
+            }
+            
+            // Move in current direction
+            x = myPoint.getX() + Math.cos(direction) * speed;
+            y = myPoint.getY() + Math.sin(direction) * speed;
+            status = "random movement";
+        }
+        
+        // Wrap around if vehicle goes out of bounds
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        
+        if (x < 0) x += width;
+        if (x >= width) x -= width;
+        if (y < 0) y += height;
+        if (y >= height) y -= height;
+        
+        // Move to new position
+        space.moveTo(this, x, y);
+    }
+    
+    /**
+     * Share information with nearby vehicles.
+     */
+    private void shareInfoWithNearbyVehicles() {
+        Context<Object> context = ContextUtils.getContext(this);
+        NdPoint myPoint = space.getLocation(this);
+        
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && obj != this) {
+                Vehicle other = (Vehicle) obj;
+                NdPoint otherPoint = space.getLocation(other);
+                double distance = space.getDistance(myPoint, otherPoint);
+                
+                if (distance <= COMMUNICATION_RADIUS) {
+                    // Share information about bins
+                    for (BinInfo binInfo : knownBins.values()) {
+                        // Only share if bin is still relevant and above threshold
+                        if (!binInfo.isStale() && binInfo.getFillPercentage() >= 70.0) {
+                            String urgencyFlag = binInfo.isUrgent ? "URGENT" : "NORMAL";
+                            String content = "BIN_INFO:" + binInfo.id + ":" + binInfo.x + ":" + binInfo.y + ":" +
+                                           binInfo.fillLevel + ":" + binInfo.capacity + ":" + binInfo.areaType + ":" + urgencyFlag;
+                            Message msg = new Message(id, "BIN_INFO", content);
+                            other.receiveMessage(msg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Check if vehicle has capacity for a given amount.
+     */
+    private boolean hasCapacityFor(double amount) {
+        return (currentLoad + amount <= capacity);
+    }
+    
+    /**
+     * Add a message to this vehicle's inbox.
+     */
+    public void receiveMessage(Message msg) {
+        inbox.add(msg);
+    }
+    
+    // Getter methods
+    
+    public int getId() {
+        return id;
+    }
+    
+    public String getType() {
+        return type;
+    }
+    
+    public String getStatus() {
+        return status;
+    }
+    
+    public double getCurrentLoad() {
+        return currentLoad;
+    }
+    
+    public double getCapacity() {
+        return capacity;
+    }
+}

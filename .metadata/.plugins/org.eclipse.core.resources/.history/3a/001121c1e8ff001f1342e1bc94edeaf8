@@ -1,0 +1,12 @@
+<context id="GarbageSimulation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://repast.org/scenario/context">
+  <!-- Define the projections (space and grid) -->
+  <projection type="continuous space" id="space"/>
+  <projection type="grid" id="grid"/>
+  
+  <parameter name="numBins" displayName="Number of Trash Bins" type="int" 
+           defaultValue="20" 
+           isReadOnly="false" 
+           converter="repast.simphony.parameter.StringConverterFactory$IntConverter"
+           />
+  
+</context>

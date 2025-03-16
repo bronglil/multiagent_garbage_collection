@@ -1,0 +1,56 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.RandomCartesianAdder;
+
+public class GarbageCollectionBuilder implements ContextBuilder<Object> {
+    
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        context.setId("GarbageSimulation");
+        
+        // Create a continuous space for vehicle movement
+        ContinuousSpaceFactory spaceFactory = 
+            ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = 
+            spaceFactory.createContinuousSpace("space", context, 
+                                               new RandomCartesianAdder<Object>(),
+                                               new repast.simphony.space.continuous.WrapAroundBorders(),
+                                               50, 50);
+        
+        // Create several garbage bins at various locations
+        GarbageBin bin1 = new GarbageBin(space, 1, 100.0);
+        context.add(bin1);
+        space.moveTo(bin1, 30, 30);
+        
+        GarbageBin bin2 = new GarbageBin(space, 2, 80.0);
+        context.add(bin2);
+        space.moveTo(bin2, 10, 40);
+        
+        GarbageBin bin3 = new GarbageBin(space, 3, 120.0);
+        context.add(bin3);
+        space.moveTo(bin3, 40, 15);
+        
+        // Create multiple collection vehicles
+        Vehicle vehicle1 = new Vehicle(space, 1, "Collector A", 0.8);
+        Vehicle vehicle2 = new Vehicle(space, 2, "Collector B", 1.0);
+        Vehicle vehicle3 = new Vehicle(space, 3, "Collector C", 0.9);
+        
+        // Add the vehicles to the context
+        context.add(vehicle1);
+        context.add(vehicle2);
+        context.add(vehicle3);
+        
+        // Place the vehicles at different starting positions
+        space.moveTo(vehicle1, 5, 5);
+        space.moveTo(vehicle2, 25, 15);
+        space.moveTo(vehicle3, 15, 35);
+        
+        return context;
+    }
+}

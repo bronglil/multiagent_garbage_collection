@@ -1,0 +1,109 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.context.space.grid.GridFactory;
+import repast.simphony.context.space.grid.GridFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.RandomCartesianAdder;
+import repast.simphony.space.grid.Grid;
+import repast.simphony.space.grid.GridBuilderParameters;
+import repast.simphony.space.grid.SimpleGridAdder;
+import repast.simphony.space.grid.WrapAroundBorders;
+
+/**
+ * Enhanced GarbageCollectionBuilder with configurable bins and visualization
+ */
+public class GarbageCollectionBuilder implements ContextBuilder<Object> {
+    
+    // Configurable parameters
+    private static final int SPACE_WIDTH = 50;
+    private static final int SPACE_HEIGHT = 50;
+    private static final int NUMBER_OF_BINS = 10;   // Can be adjusted
+    private static final int NUMBER_OF_VEHICLES = 3; // Can be adjusted
+    
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        context.setId("GarbageSimulation");
+        
+        // Create a continuous space for movement
+        ContinuousSpaceFactory spaceFactory = 
+            ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = 
+            spaceFactory.createContinuousSpace("space", context,
+                new RandomCartesianAdder<Object>(),
+                new repast.simphony.space.continuous.WrapAroundBorders(),
+                SPACE_WIDTH, SPACE_HEIGHT);
+        
+        // Create a grid for visualization (optional)
+        GridFactory gridFactory = GridFactoryFinder.createGridFactory(null);
+        Grid<Object> grid = gridFactory.createGrid("grid", context,
+                new GridBuilderParameters<Object>(new WrapAroundBorders(),
+                        new SimpleGridAdder<Object>(),
+                        true, SPACE_WIDTH, SPACE_HEIGHT));
+        
+        // Create garbage bins with random positions
+        createGarbageBins(context, space, grid, NUMBER_OF_BINS);
+        
+        // Create collection vehicles
+        createVehicles(context, space, grid, NUMBER_OF_VEHICLES);
+        
+        return context;
+    }
+    
+    private void createGarbageBins(Context<Object> context, ContinuousSpace<Object> space, 
+                                 Grid<Object> grid, int numberOfBins) {
+        
+        // Create bins with varying capacities and initial fill levels
+        for (int i = 1; i <= numberOfBins; i++) {
+            // Randomize capacity between 50 and 150
+            double capacity = 50 + RandomHelper.nextDoubleFromTo(0, 100);
+            
+            // Create the bin
+            GarbageBin bin = new GarbageBin(space, i, capacity);
+            context.add(bin);
+            
+            // Place at random position
+            int x = RandomHelper.nextIntFromTo(0, SPACE_WIDTH - 1);
+            int y = RandomHelper.nextIntFromTo(0, SPACE_HEIGHT - 1);
+            
+            space.moveTo(bin, x, y);
+            grid.moveTo(bin, x, y);
+            
+            // Optionally, pre-fill some bins to be near the broadcast threshold
+            if (RandomHelper.nextDouble() < 0.3) { // 30% chance
+                bin.fill(capacity * 0.65); // Fill to 65% (still below the 70% threshold)
+            }
+        }
+    }
+    
+    private void createVehicles(Context<Object> context, ContinuousSpace<Object> space, 
+                              Grid<Object> grid, int numberOfVehicles) {
+        
+        // Vehicle types
+        String[] vehicleTypes = {"Collector A", "Collector B", "Collector C", "Collector D", "Collector E"};
+        
+        // Create vehicles
+        for (int i = 1; i <= numberOfVehicles; i++) {
+            // Randomize speed between 0.7 and 1.2
+            double speed = 0.7 + RandomHelper.nextDoubleFromTo(0, 0.5);
+            
+            // Get vehicle type (loop through available types)
+            String type = vehicleTypes[(i - 1) % vehicleTypes.length];
+            
+            // Create the vehicle
+            Vehicle vehicle = new Vehicle(space, i, type, speed);
+            context.add(vehicle);
+            
+            // Place at random position
+            int x = RandomHelper.nextIntFromTo(0, SPACE_WIDTH - 1);
+            int y = RandomHelper.nextIntFromTo(0, SPACE_HEIGHT - 1);
+            
+            space.moveTo(vehicle, x, y);
+            grid.moveTo(vehicle, x, y);
+        }
+    }
+}

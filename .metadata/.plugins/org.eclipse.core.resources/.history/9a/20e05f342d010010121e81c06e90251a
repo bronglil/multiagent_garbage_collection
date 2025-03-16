@@ -1,0 +1,131 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+
+/**
+ * A garbage bin that broadcasts its location when fullness > 70%.
+ */
+public class GarbageBin {
+    private ContinuousSpace<Object> space;
+    private int id;
+    private double fillLevel;
+    private double capacity;
+    private boolean isFull = false;
+    private boolean isBeingServiced = false;
+    
+    // Broadcast radius - vehicles within this range will receive bin signals
+    private static final double BROADCAST_RADIUS = 15.0;
+    
+    // Fullness threshold for broadcasting (70%)
+    private static final double FULLNESS_THRESHOLD = 0.7;
+    
+    public GarbageBin(ContinuousSpace<Object> space, int id, double capacity) {
+        this.space = space;
+        this.id = id;
+        this.capacity = capacity;
+        this.fillLevel = capacity * 0.5; // Start 50% full
+        this.isFull = fillLevel >= capacity * FULLNESS_THRESHOLD; // Mark as full if over threshold
+    }
+    
+    @ScheduledMethod(start = 1, interval = 5) // Broadcast every 5 ticks
+    public void broadcastStatus() {
+        // Only broadcast if the bin is above the fullness threshold and not already being serviced
+        double fillPercentage = fillLevel / capacity;
+        
+        if (fillPercentage >= FULLNESS_THRESHOLD && !isBeingServiced) {
+            NdPoint myPoint = space.getLocation(this);
+            Context<Object> context = ContextUtils.getContext(this);
+            
+            // Check for vehicles in broadcast range
+            boolean vehicleInRange = false;
+            
+            for (Object obj : context) {
+                if (obj instanceof Vehicle) {
+                    Vehicle vehicle = (Vehicle) obj;
+                    NdPoint vehiclePoint = space.getLocation(vehicle);
+                    double distance = space.getDistance(myPoint, vehiclePoint);
+                    
+                    if (distance <= BROADCAST_RADIUS) {
+                        // Create bin status message
+                        String content = "BIN_STATUS:" + id + ":" + myPoint.getX() + ":" + myPoint.getY() 
+                                       + ":" + fillLevel + ":" + capacity;
+                        Message binMsg = new Message(id, "BIN_BROADCAST", content);
+                        
+                        // Send to vehicle
+                        vehicle.receiveMessage(binMsg);
+                        vehicleInRange = true;
+                        
+                        System.out.println("Bin " + id + " broadcasting to Vehicle " + vehicle.getId() 
+                                         + " at distance " + String.format("%.2f", distance));
+                    }
+                }
+            }
+            
+            if (vehicleInRange) {
+                System.out.println("Garbage Bin " + id + " is " + String.format("%.1f", fillPercentage*100) 
+                                 + "% full (above " + FULLNESS_THRESHOLD*100 + "% threshold) and broadcasting for collection!");
+            }
+        }
+    }
+    
+    @ScheduledMethod(start = 10, interval = 20) // Fill slowly over time
+    public void addGarbage() {
+        // Skip if being serviced
+        if (isBeingServiced) return;
+        
+        // Randomly add some garbage
+        double amount = capacity * 0.05 * Math.random(); // Up to 5% of capacity
+        fill(amount);
+    }
+    
+    public void emptyBin() {
+        this.fillLevel = 0;
+        this.isFull = false;
+        this.isBeingServiced = false;
+        System.out.println("Garbage Bin " + id + " has been emptied");
+    }
+    
+    public void markAsBeingServiced() {
+        this.isBeingServiced = true;
+        System.out.println("Garbage Bin " + id + " is now marked for service");
+    }
+    
+    public void fill(double amount) {
+        // For simulation purposes, bin fills up over time
+        fillLevel = Math.min(capacity, fillLevel + amount);
+        double fillPercentage = fillLevel / capacity;
+        
+        if (fillPercentage >= FULLNESS_THRESHOLD && !isFull) {
+            isFull = true;
+            System.out.println("Garbage Bin " + id + " is now above " + FULLNESS_THRESHOLD*100 + "% threshold!");
+        }
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public double getFillLevel() {
+        return fillLevel;
+    }
+    
+    public double getCapacity() {
+        return capacity;
+    }
+    
+    public double getFillPercentage() {
+        return (fillLevel / capacity) * 100;
+    }
+    
+    public boolean isFull() {
+        return isFull;
+    }
+    
+    public boolean isBeingServiced() {
+        return isBeingServiced;
+    }
+}

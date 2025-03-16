@@ -1,0 +1,86 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.context.space.grid.GridFactory;
+import repast.simphony.context.space.grid.GridFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.engine.environment.RunEnvironment;
+import repast.simphony.parameter.Parameters;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.SimpleCartesianAdder;
+import repast.simphony.space.grid.Grid;
+import repast.simphony.space.grid.GridBuilderParameters;
+import repast.simphony.space.grid.SimpleGridAdder;
+
+/**
+ * Main class to build the context and initialize the garbage collection simulation
+ */
+public class GarbageCollectionBuilder implements ContextBuilder<Object> {
+    
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        context.setId("GarbageSimulation");
+        
+        // Get parameters
+        Parameters params = RunEnvironment.getInstance().getParameters();
+        int numBins =   10;// params.getInteger("numBins");
+        int numVehicles = 15; // params.getInteger("numVehicles");
+        int gridSize = 50; // params.getInteger("gridSize");
+        
+        // Create the continuous space
+        ContinuousSpaceFactory spaceFactory = ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = spaceFactory.createContinuousSpace(
+                "space", 
+                context, 
+                new SimpleCartesianAdder<Object>(),
+                new repast.simphony.space.continuous.StrictBorders(),
+                gridSize, gridSize);
+        
+        // Create the grid
+        GridFactory gridFactory = GridFactoryFinder.createGridFactory(null);
+        Grid<Object> grid = gridFactory.createGrid(
+                "grid", 
+                context, 
+                new GridBuilderParameters<>(
+                        new repast.simphony.space.grid.StrictBorders(), 
+                        new SimpleGridAdder<Object>(),
+                        true, 
+                        gridSize, gridSize));
+        
+        // Create bins and add to context
+        for (int i = 0; i < numBins; i++) {
+            int x = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            int y = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            
+            int capacity = RandomHelper.nextIntFromTo(50, 200); // Random capacity between 50-200
+            TrashBin bin = new TrashBin(space, grid, capacity);
+            context.add(bin);
+            
+            // Place the bin in space
+            space.moveTo(bin, x, y);
+            grid.moveTo(bin, x, y);
+        }
+        
+        // Create vehicles and add to context
+        for (int i = 0; i < numVehicles; i++) {
+            int x = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            int y = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            
+            int capacity = RandomHelper.nextIntFromTo(500, 1000); // Random capacity between 500-1000
+            GarbageTruck truck = new GarbageTruck(space, grid, capacity);
+            context.add(truck);
+            
+            // Place the truck in space
+            space.moveTo(truck, x, y);
+            grid.moveTo(truck, x, y);
+        }
+        
+        // Set ending condition
+        RunEnvironment.getInstance().endAt(1000); // Simulation will run for 1000 steps
+        
+        return context;
+    }
+}

@@ -1,0 +1,46 @@
+package garbageSimulation;
+
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.RandomCartesianAdder;
+
+public class VehicleBuilder implements ContextBuilder<Object> {
+    
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        context.setId("VehicleSim");
+        
+        // Create a continuous space for vehicle movement
+        ContinuousSpaceFactory spaceFactory = 
+            ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = 
+            spaceFactory.createContinuousSpace("space", context, 
+                                               new RandomCartesianAdder<Object>(),
+                                               new repast.simphony.space.continuous.WrapAroundBorders(),
+                                               50, 50);
+        
+        // Create the vehicles with different types and speeds
+        Vehicle car = new Vehicle(space, 1, "Car", 1.0);
+        Vehicle truck = new Vehicle(space, 2, "Truck", 0.7);
+        Vehicle motorcycle = new Vehicle(space, 3, "Motorcycle", 1.3);
+        
+        // Add the vehicles to the context and position them in space
+        context.add(car);
+        context.add(truck);
+        context.add(motorcycle);
+        
+        // Place the vehicles randomly in the space
+        for (Object obj : context) {
+            space.moveTo(obj, 
+                         RandomHelper.nextDoubleFromTo(0, 50),
+                         RandomHelper.nextDoubleFromTo(0, 50));
+        }
+        
+        return context;
+    }
+}

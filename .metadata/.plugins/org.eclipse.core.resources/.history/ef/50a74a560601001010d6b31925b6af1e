@@ -1,0 +1,92 @@
+package garbageSimulation;
+
+import repast.simphony.space.continuous.NdPoint;
+
+/**
+ * Represents a message in the communication system
+ */
+public class Message {
+    private String messageId;
+    private MessageType type;
+    private String senderId;
+    private String recipientId; // Null for broadcast
+    private NdPoint location;
+    private int data; // Generic data field (fill level for collection requests)
+    private double distance; // Used for claims
+    private long timestamp;
+    
+    public Message(String messageId, MessageType type, String senderId, 
+                  String recipientId, NdPoint location, int data) {
+        this.messageId = messageId;
+        this.type = type;
+        this.senderId = senderId;
+        this.recipientId = recipientId;
+        this.location = location;
+        this.data = data;
+        this.distance = 0;
+        this.timestamp = System.currentTimeMillis();
+    }
+    
+    public Message(String messageId, MessageType type, String senderId, 
+                  String recipientId, NdPoint location, int data, double distance) {
+        this(messageId, type, senderId, recipientId, location, data);
+        this.distance = distance;
+    }
+    
+    // Getters
+    public String getMessageId() {
+        return messageId;
+    }
+    
+    public MessageType getType() {
+        return type;
+    }
+    
+    public String getSenderId() {
+        return senderId;
+    }
+    
+    public String getRecipientId() {
+        return recipientId;
+    }
+    
+    public NdPoint getLocation() {
+        return location;
+    }
+    
+    public int getData() {
+        return data;
+    }
+    
+    public double getDistance() {
+        return distance;
+    }
+    
+    public long getTimestamp() {
+        return timestamp;
+    }
+    
+    public boolean isBroadcast() {
+        return recipientId == null;
+    }
+    
+    @Override
+    public String toString() {
+        return "Message [id=" + messageId + ", type=" + type + 
+               ", sender=" + senderId + ", recipient=" + 
+               (recipientId == null ? "BROADCAST" : recipientId) + 
+               ", data=" + data + "]";
+    }
+}
+
+/**
+ * Types of messages in the communication system
+ */
+enum MessageType {
+    COLLECTION_REQUEST,  // Bin requesting collection
+    COLLECTION_CLAIM,    // Truck claiming a collection
+    COLLECTION_CONFIRM,  // Truck confirming it will handle a collection
+    TRUCK_STATUS,        // Truck broadcasting its status
+    TRUCK_BUSY,          // Truck is busy with another task
+    TRUCK_AVAILABLE      // Truck is available for collection
+}

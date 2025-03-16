@@ -1,0 +1,261 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+import java.util.List;
+import java.util.ArrayList;
+
+public class Vehicle {
+    private ContinuousSpace<Object> space;
+    private int id;
+    private String type;
+    private double speed;
+    private double direction; // in radians
+    private List<Message> inbox = new ArrayList<>();
+    
+    // Static point coordinates
+    private static final double POINT_X = 30.0;
+    private static final double POINT_Y = 30.0;
+    
+    // Communication parameters
+    private static final double COMMUNICATION_RADIUS = 5.0; // Vehicles must be within this distance to communicate
+    
+    // Target destination (if vehicle is following directions)
+    private NdPoint targetDestination = null;
+    
+    // Communication state
+    private boolean hasInformedOther = false;
+    private boolean hasVisitedPoint = false;
+    
+    public Vehicle(ContinuousSpace<Object> space, int id, String type, double speed) {
+        this.space = space;
+        this.id = id;
+        this.type = type;
+        this.speed = speed;
+        this.direction = Math.random() * 2 * Math.PI; // Random initial direction
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // 1. Process received messages
+        processMessages();
+        
+        // 2. Move the vehicle
+        moveVehicle();
+        
+        // 3. Check if we need to communicate with other vehicle
+        checkCommunication();
+        
+        // 4. Check if we have reached the target
+        checkTargetReached();
+    }
+    
+    private void checkCommunication() {
+        // Only vehicle 1 informs about the point location, and only once
+        if (id == 1 && !hasInformedOther) {
+            // Check if we're close to another vehicle
+            Context<Object> context = ContextUtils.getContext(this);
+            NdPoint myPoint = space.getLocation(this);
+            
+            for (Object obj : context) {
+                if (obj instanceof Vehicle && obj != this) {
+                    Vehicle other = (Vehicle) obj;
+                    
+                    // Check if we're close to the other vehicle
+                    NdPoint otherPoint = space.getLocation(other);
+                    double distance = space.getDistance(myPoint, otherPoint);
+                    
+                    if (distance <= COMMUNICATION_RADIUS) { // If vehicles are within the communication radius
+                        // Inform the other vehicle about the point
+                        informAboutPoint(other);
+                        hasInformedOther = true;
+                        
+                        System.out.println("*** COMMUNICATION ESTABLISHED: Vehicles are within " + 
+                                          String.format("%.2f", distance) + " units of each other ***");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    private void informAboutPoint(Vehicle other) {
+        String content = "POINT:" + POINT_X + ":" + POINT_Y;
+        Message pointMsg = new Message(id, "POINT_LOCATION", content);
+        
+        other.receiveMessage(pointMsg);
+        System.out.println("Vehicle " + id + " (" + type + ") informed Vehicle " + 
+                         other.getId() + " about the point at (" + 
+                         POINT_X + ", " + POINT_Y + ")");
+    }
+    
+    private void moveVehicle() {
+        NdPoint myPoint = space.getLocation(this);
+        double x, y;
+        
+        if (targetDestination != null) {
+            // We have a target to move to - calculate direction to target
+            double targetX = targetDestination.getX();
+            double targetY = targetDestination.getY();
+            
+            // Calculate direction vector
+            double dx = targetX - myPoint.getX();
+            double dy = targetY - myPoint.getY();
+            
+            // Handle wrapping around the edges
+            double width = space.getDimensions().getWidth();
+            double height = space.getDimensions().getHeight();
+            
+            // Check if it's shorter to go around the edge
+            if (dx > width / 2) dx -= width;
+            else if (dx < -width / 2) dx += width;
+            if (dy > height / 2) dy -= height;
+            else if (dy < -height / 2) dy += height;
+            
+            // Update direction to point toward target
+            direction = Math.atan2(dy, dx);
+            
+            // Calculate new position
+            x = myPoint.getX() + Math.cos(direction) * speed;
+            y = myPoint.getY() + Math.sin(direction) * speed;
+            
+            System.out.println("Vehicle " + id + " (" + type + ") moving toward target at (" + 
+                             targetX + ", " + targetY + ")");
+        } else {
+            // No target - random movement
+            // Occasionally change direction
+            if (Math.random() < 0.05) {
+                direction = Math.random() * 2 * Math.PI;
+            }
+            
+            // Move in current direction
+            x = myPoint.getX() + Math.cos(direction) * speed;
+            y = myPoint.getY() + Math.sin(direction) * speed;
+        }
+        
+        // Wrap around if vehicle goes out of bounds
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        
+        if (x < 0) x += width;
+        if (x >= width) x -= width;
+        if (y < 0) y += height;
+        if (y >= height) y -= height;
+        
+        space.moveTo(this, x, y);
+    }
+    
+    private void checkTargetReached() {
+        if (targetDestination == null) {
+            return;
+        }
+        
+        NdPoint myPoint = space.getLocation(this);
+        double distance = space.getDistance(myPoint, targetDestination);
+        
+        // If we're close enough to the target
+        if (distance < 1.0) {
+            System.out.println("Vehicle " + id + " (" + type + ") has reached the point!");
+            
+            // Mark as visited
+            hasVisitedPoint = true;
+            
+            // Send confirmation if we're vehicle 2
+            if (id == 2) {
+                sendPointReachedConfirmation();
+            }
+            
+            // Clear the target
+            targetDestination = null;
+        }
+    }
+    
+    private void sendPointReachedConfirmation() {
+        String content = "Point visited successfully";
+        Message confirmMsg = new Message(id, "POINT_REACHED", content);
+        
+        // Find vehicle 1
+        Context<Object> context = ContextUtils.getContext(this);
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && ((Vehicle) obj).getId() == 1) {
+                Vehicle vehicle1 = (Vehicle) obj;
+                
+                // Check if within communication radius
+                NdPoint myPoint = space.getLocation(this);
+                NdPoint otherPoint = space.getLocation(vehicle1);
+                double distance = space.getDistance(myPoint, otherPoint);
+                
+                if (distance <= COMMUNICATION_RADIUS) {
+                    // Send confirmation message
+                    vehicle1.receiveMessage(confirmMsg);
+                    System.out.println("Vehicle " + id + " (" + type + ") sent confirmation to Vehicle 1");
+                } else {
+                    System.out.println("Vehicle " + id + " (" + type + ") cannot send confirmation - out of range from Vehicle 1");
+                }
+                break;
+            }
+        }
+    }
+    
+    private void processMessages() {
+        if (inbox.isEmpty()) {
+            return;
+        }
+        
+        System.out.println("Vehicle " + id + " (" + type + ") processing " + inbox.size() + " messages");
+        
+        for (Message msg : inbox) {
+            System.out.println("Vehicle " + id + " (" + type + ") received message from Vehicle " + 
+                             msg.getSenderId() + ": " + msg.getType());
+            
+            // Process based on message type
+            switch (msg.getType()) {
+                case "POINT_LOCATION":
+                    handlePointLocation(msg);
+                    break;
+                case "POINT_REACHED":
+                    handlePointReached(msg);
+                    break;
+            }
+        }
+        
+        inbox.clear();
+    }
+    
+    private void handlePointLocation(Message msg) {
+        // Parse the point location
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 3 && parts[0].equals("POINT")) {
+            double pointX = Double.parseDouble(parts[1]);
+            double pointY = Double.parseDouble(parts[2]);
+            
+            // Set as target destination
+            targetDestination = new NdPoint(pointX, pointY);
+            
+            System.out.println("Vehicle " + id + " (" + type + ") received coordinates (" + 
+                             pointX + ", " + pointY + ") from Vehicle " + msg.getSenderId() + 
+                             " and is heading there now");
+        }
+    }
+    
+    private void handlePointReached(Message msg) {
+        // Vehicle 2 has confirmed reaching the point
+        System.out.println("Vehicle " + id + " (" + type + ") received confirmation that Vehicle " + 
+                         msg.getSenderId() + " has reached the point");
+    }
+    
+    public void receiveMessage(Message msg) {
+        inbox.add(msg);
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public String getType() {
+        return type;
+    }
+}

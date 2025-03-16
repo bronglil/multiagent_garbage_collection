@@ -1,0 +1,120 @@
+package garbageSimulation;
+
+import java.util.List;
+import java.util.ArrayList;
+
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.space.grid.Grid;
+import repast.simphony.util.ContextUtils;
+import repast.simphony.context.Context;
+
+/**
+ * Class representing a trash bin in the simulation
+ */
+public class TrashBin {
+    private ContinuousSpace<Object> space;
+    private Grid<Object> grid;
+    private int capacity;
+    private int currentFillLevel;
+    private int fillRate;
+    private boolean requestSent;
+    private int fillThreshold;
+    
+    public TrashBin(ContinuousSpace<Object> space, Grid<Object> grid, int capacity, int fillRate) {
+        this.space = space;
+        this.grid = grid;
+        this.capacity = capacity;
+        this.currentFillLevel = 0;
+        this.fillRate = fillRate;
+        this.requestSent = false;
+        // Send collection request when bin is 75% full
+        this.fillThreshold = (int)(capacity * 0.75);
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // Simulate trash accumulation
+        generateTrash();
+        
+        // Check if bin needs collection
+        if (currentFillLevel >= fillThreshold && !requestSent) {
+            sendCollectionRequest();
+        }
+    }
+    
+    /**
+     * Generates a random amount of trash based on the fill rate
+     */
+    private void generateTrash() {
+        // Generate a random amount of trash (with some variation)
+        int trashGenerated = RandomHelper.nextIntFromTo(
+                Math.max(0, fillRate - 2), 
+                fillRate + 2);
+        
+        // Add to current fill level, capped at capacity
+        currentFillLevel = Math.min(capacity, currentFillLevel + trashGenerated);
+    }
+    
+    /**
+     * Sends a collection request to all garbage trucks in the context
+     */
+    private void sendCollectionRequest() {
+        // Get location of this bin
+        NdPoint location = space.getLocation(this);
+        
+        // Get context and find all garbage trucks
+        Context<Object> context = ContextUtils.getContext(this);
+        Iterable<Object> trucks = context.getObjects(GarbageTruck.class);
+        
+        // Find nearest truck or send to all trucks depending on implementation
+        for (Object obj : trucks) {
+            if (obj instanceof GarbageTruck) {
+                GarbageTruck truck = (GarbageTruck) obj;
+                // Send collection request to the truck
+                truck.receiveCollectionRequest(this, location, currentFillLevel);
+                
+                // Mark request as sent
+                requestSent = true;
+            }
+        }
+        
+        // Debug message
+        System.out.println("Bin at " + location + " sent collection request. Fill level: " + 
+                          currentFillLevel + "/" + capacity);
+    }
+    
+    /**
+     * Empties the bin (called by GarbageTruck)
+     */
+    public void empty() {
+        currentFillLevel = 0;
+        requestSent = false;
+        
+        // Debug message
+        System.out.println("Bin at " + space.getLocation(this) + " emptied.");
+    }
+    
+    /**
+     * Gets the current fill level
+     */
+    public int getCurrentFillLevel() {
+        return currentFillLevel;
+    }
+    
+    /**
+     * Gets the bin capacity
+     */
+    public int getCapacity() {
+        return capacity;
+    }
+    
+    /**
+     * Gets the percentage full (0.0 to 1.0)
+     */
+    public double getPercentageFull() {
+        return (double) currentFillLevel / capacity;
+    }
+}

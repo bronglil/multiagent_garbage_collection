@@ -1,0 +1,44 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.RandomCartesianAdder;
+
+public class GarbageCollectionBuilder implements ContextBuilder<Object> {
+    
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        context.setId("GarbageSimulation");
+        
+        // Create a continuous space for vehicle movement
+        ContinuousSpaceFactory spaceFactory = 
+            ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = 
+            spaceFactory.createContinuousSpace("space", context, 
+                                               new RandomCartesianAdder<Object>(),
+                                               new repast.simphony.space.continuous.WrapAroundBorders(),
+                                               50, 50);
+        
+        // Create a static point at location (30, 30)
+        StaticPoint point = new StaticPoint(1);
+        context.add(point);
+        space.moveTo(point, 30, 30);
+        
+        // Create two vehicles
+        Vehicle vehicle1 = new Vehicle(space, 1, "Informer", 0.8);
+        Vehicle vehicle2 = new Vehicle(space, 2, "Visitor", 1.0);
+        
+        // Add the vehicles to the context
+        context.add(vehicle1);
+        context.add(vehicle2);
+        
+        // Place the vehicles at starting positions
+        space.moveTo(vehicle1, 10, 10);
+        space.moveTo(vehicle2, 20, 10);
+        
+        return context;
+    }
+}

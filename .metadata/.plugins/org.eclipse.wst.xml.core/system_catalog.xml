@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="http://repast.org/batch/params" uri="file:/Applications/Repast Simphony 2.11.0/Eclipse.app/Contents/Eclipse/plugins/repast.simphony.batch_2.11.0/models/batch_params.xsd"/>
+  <uri name="http://repast.org/integration/datadescriptor" uri="file:/Applications/Repast Simphony 2.11.0/Eclipse.app/Contents/Eclipse/plugins/repast.simphony.integration_2.11.0/models/datadescriptor.xsd"/>
+  <uri name="http://repast.org/scenario/context" uri="file:/Applications/Repast Simphony 2.11.0/Eclipse.app/Contents/Eclipse/plugins/repast.simphony.scenario_2.11.0/schemas/context.xsd"/>
+  <uri name="http://repast.org/scenario/user_path" uri="file:/Applications/Repast Simphony 2.11.0/Eclipse.app/Contents/Eclipse/plugins/repast.simphony.scenario_2.11.0/schemas/user_path.xsd"/>
+</catalog>

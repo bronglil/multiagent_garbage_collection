@@ -1,0 +1,58 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.RandomCartesianAdder;
+
+public class GarbageCollectionBuilder implements ContextBuilder<Object> {
+    
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        context.setId("GarbageSimulation");
+        
+        // Create a continuous space for vehicle movement
+        ContinuousSpaceFactory spaceFactory = 
+            ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = 
+            spaceFactory.createContinuousSpace("space", context, 
+                                               new RandomCartesianAdder<Object>(),
+                                               new repast.simphony.space.continuous.WrapAroundBorders(),
+                                               50, 50);
+        
+        // Create vehicles with different types, speeds, and capacity
+        // Large trucks have high capacity
+        Vehicle truck1 = new Vehicle(space, 1, "Large Truck", 0.6, 100.0);
+        Vehicle truck2 = new Vehicle(space, 2, "Large Truck", 0.6, 100.0);
+        
+        // Medium trucks have medium capacity
+        Vehicle mediumTruck1 = new Vehicle(space, 3, "Medium Truck", 0.8, 60.0);
+        Vehicle mediumTruck2 = new Vehicle(space, 4, "Medium Truck", 0.8, 60.0);
+        
+        // Small trucks have low capacity but are faster
+        Vehicle smallTruck1 = new Vehicle(space, 5, "Small Truck", 1.0, 30.0);
+        Vehicle smallTruck2 = new Vehicle(space, 6, "Small Truck", 1.0, 30.0);
+        
+        // Add the vehicles to the context
+        context.add(truck1);
+        context.add(truck2);
+        context.add(mediumTruck1);
+        context.add(mediumTruck2);
+        context.add(smallTruck1);
+        context.add(smallTruck2);
+        
+        // Place the vehicles randomly in the space
+        for (Object obj : context) {
+            if (obj instanceof Vehicle) {
+                space.moveTo(obj, 
+                         RandomHelper.nextDoubleFromTo(0, 50),
+                         RandomHelper.nextDoubleFromTo(0, 50));
+            }
+        }
+        
+        return context;
+    }
+}

@@ -1,0 +1,156 @@
+package garbageSimulation;
+
+import java.util.UUID;
+
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.space.grid.Grid;
+
+/**
+ * Class representing a trash bin in the simulation
+ */
+public class TrashBin {
+    private String id;
+    private ContinuousSpace<Object> space;
+    private Grid<Object> grid;
+    private int capacity;
+    private int currentFillLevel;
+    private int fillRate;
+    private boolean requestSent;
+    private int fillThreshold;
+    private String activeRequestId;
+    private int ticksToWait;
+    
+    public TrashBin(ContinuousSpace<Object> space, Grid<Object> grid, int capacity, int fillRate) {
+        this.id = "Bin-" + UUID.randomUUID().toString().substring(0, 8);
+        this.space = space;
+        this.grid = grid;
+        this.capacity = capacity;
+        this.currentFillLevel = 0;
+        this.fillRate = fillRate;
+        this.requestSent = false;
+        // Send collection request when bin is 75% full
+        this.fillThreshold = (int)(capacity * 0.75);
+        this.activeRequestId = null;
+        this.ticksToWait = 0;
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // Simulate trash accumulation
+        generateTrash();
+        
+        // Count down ticks to wait before requesting again
+        if (ticksToWait > 0) {
+            ticksToWait--;
+        }
+        
+        // Check if bin needs collection and no request is active
+        if (currentFillLevel >= fillThreshold && !requestSent && ticksToWait == 0) {
+            sendCollectionRequest();
+        }
+        
+        // Check if request is active but no truck has claimed it after a while
+        CommunicationSystem comms = CommunicationSystem.getInstance();
+        if (requestSent && !comms.isBinAssigned(id)) {
+            // If request is old, send again
+            if (ticksToWait == 0) {
+                sendCollectionRequest();
+            }
+        }
+    }
+    
+    /**
+     * Generates a random amount of trash based on the fill rate
+     */
+    private void generateTrash() {
+        if (currentFillLevel >= capacity) {
+            return; // Bin is already full
+        }
+        
+        // Generate a random amount of trash (with some variation)
+        int trashGenerated = RandomHelper.nextIntFromTo(
+                Math.max(0, fillRate - 2), 
+                fillRate + 2);
+        
+        // Add to current fill level, capped at capacity
+        currentFillLevel = Math.min(capacity, currentFillLevel + trashGenerated);
+    }
+    
+    /**
+     * Sends a collection request broadcast to all garbage trucks
+     */
+    private void sendCollectionRequest() {
+        // Get location of this bin
+        NdPoint location = space.getLocation(this);
+        
+        // Broadcast collection request via communication system
+        CommunicationSystem comms = CommunicationSystem.getInstance();
+        activeRequestId = comms.broadcastCollectionRequest(this, location, currentFillLevel);
+        
+        // Mark request as sent
+        requestSent = true;
+        
+        // Set wait time before requesting again (if this request is ignored)
+        ticksToWait = 20; // Wait 20 ticks before sending another request
+    }
+    
+    /**
+     * Empties the bin (called when a GarbageTruck collects from it)
+     */
+    public void empty() {
+        currentFillLevel = 0;
+        requestSent = false;
+        activeRequestId = null;
+        
+        // Remove bin assignment in comm system
+        CommunicationSystem.getInstance().releaseBinAssignment(id);
+        
+        // Debug message
+        System.out.println("[BIN] " + id + " at " + space.getLocation(this) + " emptied.");
+    }
+    
+    /**
+     * Gets the current fill level
+     */
+    public int getCurrentFillLevel() {
+        return currentFillLevel;
+    }
+    
+    /**
+     * Gets the bin capacity
+     */
+    public int getCapacity() {
+        return capacity;
+    }
+    
+    /**
+     * Gets the percentage full (0.0 to 1.0)
+     */
+    public double getPercentageFull() {
+        return (double) currentFillLevel / capacity;
+    }
+    
+    /**
+     * Gets the bin's unique ID
+     */
+    public String getId() {
+        return id;
+    }
+    
+    /**
+     * Checks if a collection request has been sent
+     */
+    public boolean hasRequestSent() {
+        return requestSent;
+    }
+    
+    /**
+     * Gets the active request ID
+     */
+    public String getActiveRequestId() {
+        return activeRequestId;
+    }
+}

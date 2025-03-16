@@ -1,0 +1,253 @@
+package garbageSimulation;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import repast.simphony.space.continuous.NdPoint;
+
+/**
+ * Central communication system for the garbage collection simulation.
+ * Handles message broadcasting and inter-agent communication.
+ */
+public class CommunicationSystem {
+    // Singleton instance
+    private static CommunicationSystem instance;
+    
+    // Collection of all messages in the system
+    private List<Message> activeMessages;
+    
+    // Map of assigned bins to trucks
+    private Map<String, String> binAssignments; // BinID -> TruckID
+    
+    // Private constructor for singleton
+    private CommunicationSystem() {
+        activeMessages = new ArrayList<>();
+        binAssignments = new HashMap<>();
+    }
+    
+    /**
+     * Get the singleton instance of the communication system
+     */
+    public static synchronized CommunicationSystem getInstance() {
+        if (instance == null) {
+            instance = new CommunicationSystem();
+        }
+        return instance;
+    }
+    
+    /**
+     * Broadcast a collection request from a trash bin
+     */
+    public String broadcastCollectionRequest(TrashBin bin, NdPoint location, int fillLevel) {
+        String messageId = UUID.randomUUID().toString();
+        
+        // Create a new collection request message
+        Message message = new Message(
+                messageId,
+                MessageType.COLLECTION_REQUEST,
+                bin.getId(),
+                null, // No specific recipient yet
+                location,
+                fillLevel
+        );
+        
+        // Add to active messages
+        activeMessages.add(message);
+        
+        System.out.println("[COMM] Bin " + bin.getId() + " broadcasted collection request. Fill level: " 
+                + fillLevel + "/" + bin.getCapacity());
+        
+        return messageId;
+    }
+    
+    /**
+     * Truck claims a collection request
+     */
+    public boolean claimCollectionRequest(String messageId, GarbageTruck truck, double distance) {
+        Message message = findMessageById(messageId);
+        if (message == null) {
+            return false;
+        }
+        
+        // Check if this bin is already assigned
+        if (binAssignments.containsKey(message.getSenderId())) {
+            return false;
+        }
+        
+        // Create a claim message
+        Message claimMessage = new Message(
+                UUID.randomUUID().toString(),
+                MessageType.COLLECTION_CLAIM,
+                truck.getTruckId(),
+                null, // Broadcast to all trucks
+                message.getLocation(),
+                message.getData(),
+                distance
+        );
+        
+        // Add to active messages
+        activeMessages.add(claimMessage);
+        
+        System.out.println("[COMM] Truck " + truck.getTruckId() + " claims bin " 
+                + message.getSenderId() + " (distance: " + String.format("%.2f", distance) + ")");
+        
+        return true;
+    }
+    
+    /**
+     * Truck confirms it will handle a collection
+     */
+    public void confirmCollection(String binId, GarbageTruck truck) {
+        // Assign bin to truck
+        binAssignments.put(binId, truck.getTruckId());
+        
+        // Remove all messages related to this bin
+        List<Message> toRemove = new ArrayList<>();
+        for (Message message : activeMessages) {
+            if (message.getSenderId().equals(binId) || 
+                (message.getType() == MessageType.COLLECTION_CLAIM && 
+                 message.getData() == findMessageByBinId(binId).getData())) {
+                toRemove.add(message);
+            }
+        }
+        activeMessages.removeAll(toRemove);
+        
+        System.out.println("[COMM] Truck " + truck.getTruckId() + " confirmed collection for bin " + binId);
+    }
+    
+    /**
+     * Get all active collection requests
+     */
+    public List<Message> getActiveCollectionRequests() {
+        List<Message> requests = new ArrayList<>();
+        for (Message message : activeMessages) {
+            if (message.getType() == MessageType.COLLECTION_REQUEST) {
+                requests.add(message);
+            }
+        }
+        return requests;
+    }
+    
+    /**
+     * Get all claims for a specific bin
+     */
+    public List<Message> getClaimsForBin(String binId) {
+        List<Message> claims = new ArrayList<>();
+        for (Message message : activeMessages) {
+            if (message.getType() == MessageType.COLLECTION_CLAIM && 
+                message.getSenderId().equals(binId)) {
+                claims.add(message);
+            }
+        }
+        return claims;
+    }
+    
+    /**
+     * Find a message by ID
+     */
+    private Message findMessageById(String messageId) {
+        for (Message message : activeMessages) {
+            if (message.getMessageId().equals(messageId)) {
+                return message;
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Find a collection request by bin ID
+     */
+    private Message findMessageByBinId(String binId) {
+        for (Message message : activeMessages) {
+            if (message.getType() == MessageType.COLLECTION_REQUEST && 
+                message.getSenderId().equals(binId)) {
+                return message;
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Check if a bin is already assigned to a truck
+     */
+    public boolean isBinAssigned(String binId) {
+        return binAssignments.containsKey(binId);
+    }
+    
+    /**
+     * Get truck assigned to a bin
+     */
+    public String getTruckForBin(String binId) {
+        return binAssignments.get(binId);
+    }
+    
+    /**
+     * Release a bin assignment when collection is complete
+     */
+    public void releaseBinAssignment(String binId) {
+        binAssignments.remove(binId);
+        System.out.println("[COMM] Released assignment for bin " + binId);
+    }
+    
+    /**
+     * Determine the best truck for a bin based on claims
+     */
+    public String determineBestTruck(String binId) {
+        List<Message> claims = new ArrayList<>();
+        for (Message message : activeMessages) {
+            if (message.getType() == MessageType.COLLECTION_CLAIM) {
+                // Find the original request this claim is for
+                for (Message request : activeMessages) {
+                    if (request.getType() == MessageType.COLLECTION_REQUEST && 
+                        request.getSenderId().equals(binId) && 
+                        request.getLocation().equals(message.getLocation()) && 
+                        request.getData() == message.getData()) {
+                        claims.add(message);
+                    }
+                }
+            }
+        }
+        
+        if (claims.isEmpty()) {
+            return null;
+        }
+        
+        // Find truck with shortest distance
+        Message bestClaim = claims.get(0);
+        for (Message claim : claims) {
+            if (claim.getDistance() < bestClaim.getDistance()) {
+                bestClaim = claim;
+            }
+        }
+        
+        return bestClaim.getSenderId();
+    }
+    
+    /**
+     * Clear all messages related to a specific truck
+     */
+    public void clearTruckMessages(String truckId) {
+        List<Message> toRemove = new ArrayList<>();
+        for (Message message : activeMessages) {
+            if (message.getSenderId().equals(truckId)) {
+                toRemove.add(message);
+            }
+        }
+        activeMessages.removeAll(toRemove);
+        
+        // Also clear bin assignments for this truck
+        List<String> binsToRemove = new ArrayList<>();
+        for (Map.Entry<String, String> entry : binAssignments.entrySet()) {
+            if (entry.getValue().equals(truckId)) {
+                binsToRemove.add(entry.getKey());
+            }
+        }
+        
+        for (String binId : binsToRemove) {
+            binAssignments.remove(binId);
+        }
+    }
+}

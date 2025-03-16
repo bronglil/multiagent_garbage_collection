@@ -1,0 +1,16 @@
+package garbageSimulation;
+
+/**
+ * A simple static point that will be visible in the simulation.
+ */
+public class StaticPoint {
+    private int id;
+    
+    public StaticPoint(int id) {
+        this.id = id;
+    }
+    
+    public int getId() {
+        return id;
+    }
+}

@@ -1,0 +1,119 @@
+package garbageSimulation;
+
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+import java.util.List;
+import java.util.ArrayList;
+
+public class Vehicle {
+    private ContinuousSpace<Object> space;
+    private int id;
+    private String type;
+    private double speed;
+    private double direction; // in radians
+    private List<Message> inbox = new ArrayList<>();
+    
+    public Vehicle(ContinuousSpace<Object> space, int id, String type, double speed) {
+        this.space = space;
+        this.id = id;
+        this.type = type;
+        this.speed = speed;
+        this.direction = Math.random() * 2 * Math.PI; // Random initial direction
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // 1. Move the vehicle
+        NdPoint myPoint = space.getLocation(this);
+        double x = myPoint.getX() + Math.cos(direction) * speed;
+        double y = myPoint.getY() + Math.sin(direction) * speed;
+        
+        // Wrap around if vehicle goes out of bounds
+        if (x < 0) x += space.getDimensions()[0];
+        if (x >= space.getDimensions()[0]) x -= space.getDimensions()[0];
+        if (y < 0) y += space.getDimensions()[1];
+        if (y >= space.getDimensions()[1]) y -= space.getDimensions()[1];
+        
+        space.moveTo(this, x, y);
+        
+        // 2. Process received messages
+        processMessages();
+        
+        // 3. Send messages to other vehicles
+        broadcastPosition();
+        
+        // 4. Occasionally change direction
+        if (Math.random() < 0.1) {
+            direction = Math.random() * 2 * Math.PI;
+        }
+    }
+    
+    private void processMessages() {
+        System.out.println("Vehicle " + id + " processing " + inbox.size() + " messages");
+        
+        for (Message msg : inbox) {
+            // Log message receipt
+            System.out.println("Vehicle " + id + " received: " + msg.getContent() + 
+                               " from Vehicle " + msg.getSenderId());
+            
+            // Example: Adjust behavior based on message type
+            if (msg.getType().equals("POSITION")) {
+                // Could implement collision avoidance logic here
+                System.out.println("Vehicle " + id + " acknowledges position of Vehicle " + msg.getSenderId());
+            } else if (msg.getType().equals("ALERT")) {
+                // Handle alert messages
+                System.out.println("Vehicle " + id + " responds to alert from Vehicle " + msg.getSenderId());
+                
+                // Example: Change direction away from alerting vehicle
+                this.direction = (this.direction + Math.PI) % (2 * Math.PI);
+            }
+        }
+        
+        // Clear inbox after processing
+        inbox.clear();
+    }
+    
+    private void broadcastPosition() {
+        NdPoint myPoint = space.getLocation(this);
+        String content = "Position: " + myPoint.getX() + ", " + myPoint.getY();
+        Message posMsg = new Message(id, "POSITION", content);
+        
+        // Get all vehicles in context
+        Context<Object> context = ContextUtils.getContext(this);
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && obj != this) {
+                Vehicle other = (Vehicle) obj;
+                
+                // Check if within communication range (half the grid size)
+                double commRange = Math.min(space.getDimensions()[0], space.getDimensions()[1]) / 2;
+                double distance = space.getDistance(myPoint, space.getLocation(other));
+                
+                if (distance <= commRange) {
+                    other.receiveMessage(posMsg);
+                    
+                    // Example: Send alert if very close
+                    if (distance < commRange / 4) {
+                        Message alertMsg = new Message(id, "ALERT", "Too close! Distance: " + distance);
+                        other.receiveMessage(alertMsg);
+                    }
+                }
+            }
+        }
+    }
+    
+    public void receiveMessage(Message msg) {
+        inbox.add(msg);
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public String getType() {
+        return type;
+    }
+}

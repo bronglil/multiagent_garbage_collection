@@ -1,0 +1,298 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
+
+public class Vehicle {
+    private ContinuousSpace<Object> space;
+    private int id;
+    private String type;
+    private double speed;
+    private double direction; // in radians
+    private List<Message> inbox = new ArrayList<>();
+    
+    // Garbage capacity variables
+    private double maxCapacity;
+    private double currentCapacity;
+    private boolean needsAssistance = false;
+    
+    // Set to track message IDs that have been processed to avoid duplicates
+    private Set<String> processedMessageIds = new HashSet<>();
+    
+    public Vehicle(ContinuousSpace<Object> space, int id, String type, double speed, double maxCapacity) {
+        this.space = space;
+        this.id = id;
+        this.type = type;
+        this.speed = speed;
+        this.direction = Math.random() * 2 * Math.PI; // Random initial direction
+        this.maxCapacity = maxCapacity;
+        this.currentCapacity = maxCapacity; // Start with full capacity
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // 1. Move the vehicle
+        NdPoint myPoint = space.getLocation(this);
+        double x = myPoint.getX() + Math.cos(direction) * speed;
+        double y = myPoint.getY() + Math.sin(direction) * speed;
+        
+        // Wrap around if vehicle goes out of bounds
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        
+        if (x < 0) x += width;
+        if (x >= width) x -= width;
+        if (y < 0) y += height;
+        if (y >= height) y -= height;
+        
+        space.moveTo(this, x, y);
+        
+        // 2. Simulate garbage collection (randomly decrease capacity)
+        collectGarbage();
+        
+        // 3. Process received messages
+        processMessages();
+        
+        // 4. Broadcast capacity status if needed
+        if (needsAssistance) {
+            requestAssistance();
+        }
+        
+        // 5. Occasionally change direction
+        if (Math.random() < 0.1) {
+            direction = Math.random() * 2 * Math.PI;
+        }
+    }
+    
+    private void collectGarbage() {
+        // Randomly collect garbage (decrease available capacity)
+        if (currentCapacity > 0 && Math.random() < 0.2) { // 20% chance to collect garbage
+            double collectionAmount = Math.min(currentCapacity, Math.random() * 5);
+            currentCapacity -= collectionAmount;
+            
+            System.out.println("Vehicle " + id + " (" + type + ") collected garbage. Remaining capacity: " 
+                              + String.format("%.2f", currentCapacity) + " / " + maxCapacity);
+            
+            // If capacity is low, mark that we need assistance
+            if (currentCapacity < maxCapacity * 0.2) { // Less than 20% capacity remaining
+                needsAssistance = true;
+            }
+        }
+    }
+    
+    private void requestAssistance() {
+        // Create a message requesting assistance
+        String content = "CAPACITY_STATUS:" + currentCapacity + ":" + maxCapacity;
+        Message assistanceMsg = new Message(id, "CAPACITY_REQUEST", content);
+        
+        // Broadcast to nearby vehicles
+        NdPoint myPoint = space.getLocation(this);
+        Context<Object> context = ContextUtils.getContext(this);
+        
+        System.out.println("Vehicle " + id + " (" + type + ") is LOW ON CAPACITY! Broadcasting request for assistance.");
+        
+        // Calculate communication range
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        double commRange = Math.min(width, height) / 3; // Communication range
+        
+        boolean foundHelper = false;
+        
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && obj != this) {
+                Vehicle other = (Vehicle) obj;
+                
+                // Check if within communication range
+                double distance = space.getDistance(myPoint, space.getLocation(other));
+                
+                if (distance <= commRange) {
+                    other.receiveMessage(assistanceMsg);
+                    foundHelper = true;
+                }
+            }
+        }
+        
+        if (foundHelper) {
+            needsAssistance = false; // Reset flag after requesting help
+        }
+    }
+    
+    private void processMessages() {
+        if (inbox.isEmpty()) {
+            return;
+        }
+        
+        for (Message msg : inbox) {
+            // Generate a unique ID for this message
+            String messageId = msg.getSenderId() + "-" + msg.getTimestamp() + "-" + msg.getContent().hashCode();
+            
+            // Skip if already processed
+            if (processedMessageIds.contains(messageId)) {
+                continue;
+            }
+            
+            processedMessageIds.add(messageId);
+            
+            // Process the message based on type
+            if (msg.getType().equals("CAPACITY_REQUEST")) {
+                handleCapacityRequest(msg);
+            } 
+            else if (msg.getType().equals("CAPACITY_RESPONSE")) {
+                handleCapacityResponse(msg);
+            }
+            else if (msg.getType().equals("TRANSFER_REQUEST")) {
+                handleTransferRequest(msg);
+            }
+            else if (msg.getType().equals("TRANSFER_ACCEPTED")) {
+                handleTransferAccepted(msg);
+            }
+        }
+        
+        // Clear inbox after processing
+        inbox.clear();
+    }
+    
+    private void handleCapacityRequest(Message msg) {
+        // Another vehicle is requesting capacity assistance
+        int requesterId = msg.getSenderId();
+        String[] parts = msg.getContent().split(":");
+        double requesterCapacity = Double.parseDouble(parts[1]);
+        double requesterMaxCapacity = Double.parseDouble(parts[2]);
+        
+        System.out.println("Vehicle " + id + " received capacity request from Vehicle " + requesterId 
+                         + " with capacity " + String.format("%.2f", requesterCapacity) 
+                         + " / " + requesterMaxCapacity);
+        
+        // Check if we have enough spare capacity to help
+        if (currentCapacity > maxCapacity * 0.6) { // We have more than 60% capacity remaining
+            // Respond that we can help
+            String responseContent = "CAPACITY_AVAILABLE:" + currentCapacity + ":" + maxCapacity;
+            Message responseMsg = new Message(id, "CAPACITY_RESPONSE", responseContent);
+            
+            // Find the requesting vehicle and send the response
+            Context<Object> context = ContextUtils.getContext(this);
+            for (Object obj : context) {
+                if (obj instanceof Vehicle && ((Vehicle) obj).getId() == requesterId) {
+                    Vehicle requester = (Vehicle) obj;
+                    requester.receiveMessage(responseMsg);
+                    System.out.println("Vehicle " + id + " (" + type + ") responding with available capacity: " 
+                                     + String.format("%.2f", currentCapacity));
+                    break;
+                }
+            }
+        }
+    }
+    
+    private void handleCapacityResponse(Message msg) {
+        // Another vehicle is offering to help with capacity
+        int responderId = msg.getSenderId();
+        String[] parts = msg.getContent().split(":");
+        double responderCapacity = Double.parseDouble(parts[1]);
+        double responderMaxCapacity = Double.parseDouble(parts[2]);
+        
+        System.out.println("Vehicle " + id + " received capacity offer from Vehicle " + responderId 
+                         + " with available capacity " + String.format("%.2f", responderCapacity) 
+                         + " / " + responderMaxCapacity);
+        
+        // Calculate how much garbage we need to transfer
+        double neededCapacity = maxCapacity * 0.5 - currentCapacity; // Try to get back to 50% capacity
+        
+        if (neededCapacity > 0 && responderCapacity > neededCapacity) {
+            // Request a transfer
+            String transferContent = "TRANSFER:" + neededCapacity;
+            Message transferMsg = new Message(id, "TRANSFER_REQUEST", transferContent);
+            
+            // Find the responding vehicle and send the request
+            Context<Object> context = ContextUtils.getContext(this);
+            for (Object obj : context) {
+                if (obj instanceof Vehicle && ((Vehicle) obj).getId() == responderId) {
+                    Vehicle responder = (Vehicle) obj;
+                    responder.receiveMessage(transferMsg);
+                    System.out.println("Vehicle " + id + " (" + type + ") requesting transfer of " 
+                                     + String.format("%.2f", neededCapacity) + " units");
+                    break;
+                }
+            }
+        }
+    }
+    
+    private void handleTransferRequest(Message msg) {
+        // Another vehicle wants to transfer garbage to us
+        int requesterId = msg.getSenderId();
+        String[] parts = msg.getContent().split(":");
+        double transferAmount = Double.parseDouble(parts[1]);
+        
+        System.out.println("Vehicle " + id + " received transfer request from Vehicle " + requesterId 
+                         + " for " + String.format("%.2f", transferAmount) + " units");
+        
+        // Check if we still have capacity
+        if (currentCapacity >= transferAmount) {
+            // Accept the transfer
+            String acceptContent = "ACCEPTED:" + transferAmount;
+            Message acceptMsg = new Message(id, "TRANSFER_ACCEPTED", acceptContent);
+            
+            // Update our capacity
+            currentCapacity -= transferAmount;
+            
+            // Find the requesting vehicle and send the acceptance
+            Context<Object> context = ContextUtils.getContext(this);
+            for (Object obj : context) {
+                if (obj instanceof Vehicle && ((Vehicle) obj).getId() == requesterId) {
+                    Vehicle requester = (Vehicle) obj;
+                    requester.receiveMessage(acceptMsg);
+                    
+                    System.out.println("Vehicle " + id + " (" + type + ") ACCEPTED transfer of " 
+                                     + String.format("%.2f", transferAmount) + " units. New capacity: " 
+                                     + String.format("%.2f", currentCapacity) + " / " + maxCapacity);
+                    break;
+                }
+            }
+        }
+    }
+    
+    private void handleTransferAccepted(Message msg) {
+        // Our transfer request was accepted
+        int accepterId = msg.getSenderId();
+        String[] parts = msg.getContent().split(":");
+        double transferAmount = Double.parseDouble(parts[1]);
+        
+        // Update our capacity
+        currentCapacity += transferAmount;
+        needsAssistance = false;
+        
+        System.out.println("Vehicle " + id + " (" + type + ") TRANSFERRED " + String.format("%.2f", transferAmount) 
+                         + " units to Vehicle " + accepterId + ". New capacity: " 
+                         + String.format("%.2f", currentCapacity) + " / " + maxCapacity);
+    }
+    
+    public void receiveMessage(Message msg) {
+        inbox.add(msg);
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public String getType() {
+        return type;
+    }
+    
+    public double getCurrentCapacity() {
+        return currentCapacity;
+    }
+    
+    public double getMaxCapacity() {
+        return maxCapacity;
+    }
+    
+    public double getCapacityPercentage() {
+        return (currentCapacity / maxCapacity) * 100;
+    }
+}

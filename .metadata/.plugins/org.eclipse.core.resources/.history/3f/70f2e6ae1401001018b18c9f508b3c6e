@@ -1,0 +1,57 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.RandomCartesianAdder;
+import repast.simphony.visualization.visualization2D.StyleOGL2D;
+
+public class GarbageCollectionBuilder implements ContextBuilder<Object> {
+    
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        context.setId("GarbageSimulation");
+        
+        // Create a continuous space for vehicle movement
+        ContinuousSpaceFactory spaceFactory = 
+            ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = 
+            spaceFactory.createContinuousSpace("space", context, 
+                                               new RandomCartesianAdder<Object>(),
+                                               new repast.simphony.space.continuous.WrapAroundBorders(),
+                                               50, 50);
+        
+        // Create two vehicles with different roles:
+        // Vehicle 1 (Scout): Discovers points and communicates them to Vehicle 2
+        // Vehicle 2 (Follower): Receives coordinates and navigates to them
+        Vehicle scout = new Vehicle(space, 1, "Scout", 0.8);
+        Vehicle follower = new Vehicle(space, 2, "Follower", 1.0);
+        
+        // Add the vehicles to the context
+        context.add(scout);
+        context.add(follower);
+        
+        // Place the vehicles relatively close to each other initially
+        space.moveTo(scout, 15, 15);
+        space.moveTo(follower, 25, 15);
+        
+        return context;
+    }
+    
+    /**
+     * Note: To properly visualize the points and vehicles, you should set up custom
+     * style classes for them in the RePast Simphony GUI.
+     * 
+     * For InterestPoint: Set the shape to Circle or Square with bright color (red)
+     * For Vehicle: Use different shapes or colors for Scout (e.g., Triangle, blue) 
+     *              and Follower (e.g., Triangle, green)
+     * 
+     * This can be done in the RePast GUI by:
+     * 1. Right-click on the diagram 
+     * 2. Select "Edit Style"
+     * 3. Create styles for each class type (Vehicle and InterestPoint)
+     * 4. Set appropriate colors, shapes, and sizes
+     */
+}

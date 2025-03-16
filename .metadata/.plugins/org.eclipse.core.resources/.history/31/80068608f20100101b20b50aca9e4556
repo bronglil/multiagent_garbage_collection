@@ -1,0 +1,1077 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
+
+public class Vehicle {
+    private ContinuousSpace<Object> space;
+    private int id;
+    private String type;
+    private double speed;
+    private double direction; // in radians
+    private List<Message> inbox = new ArrayList<>();
+    
+    // Store previous position for path crossing detection
+    private NdPoint previousPosition;
+    
+    // Known bin information
+    private Map<Integer, BinInfo> knownBins = new HashMap<>();
+    
+    // Target bin for collection
+    private Integer targetBinId = null;
+    private NdPoint targetDestination = null;
+    
+    // Communication parameters - increased for better coordination
+    private static final double COMMUNICATION_RADIUS = 20.0; // Increased from 5.0
+    
+    // Coordination state
+    private Map<Integer, VehicleIntent> binAssignments = new HashMap<>(); // Maps bin ID to vehicle ID and timestamp
+    private boolean waitingForCoordination = false;
+    private int coordinationBinId = -1;
+    private long coordinationStartTime = 0;
+    private static final long COORDINATION_WAIT_TIME = 1000; // Increased from 500 milliseconds
+    
+    // Stopping at destination
+    private boolean isCollectingFromBin = false;
+    private int waitCounter = 0;
+    private static final int COLLECTION_DURATION = 10; // Reduced from 20 ticks
+    
+    // Set of bin IDs we've already announced intentions for
+    private Set<Integer> announcedIntentions = new HashSet<>();
+    
+    // Set of bins currently being serviced by any vehicle
+    private static Set<Integer> globalBeingServiced = new HashSet<>();
+    
+    // Last empty time to prevent immediate targeting of just-emptied bins
+    private Map<Integer, Long> lastEmptyTime = new HashMap<>();
+    private static final long EMPTY_COOLDOWN = 5000; // 5 seconds cooldown
+    
+    // Vehicle status for debugging and better coordination
+    private String status = "idle";
+    
+    private class VehicleIntent {
+        int vehicleId;
+        long timestamp;
+        double distance;
+        
+        VehicleIntent(int vehicleId, long timestamp, double distance) {
+            this.vehicleId = vehicleId;
+            this.timestamp = timestamp;
+            this.distance = distance;
+        }
+    }
+    
+    private class BinInfo {
+        int id;
+        double x;
+        double y;
+        double fillLevel;
+        double capacity;
+        long lastUpdated;
+        String areaType;
+        
+        BinInfo(int id, double x, double y, double fillLevel, double capacity, String areaType) {
+            this.id = id;
+            this.x = x;
+            this.y = y;
+            this.fillLevel = fillLevel;
+            this.capacity = capacity;
+            this.lastUpdated = System.currentTimeMillis();
+            this.areaType = areaType;
+        }
+        
+        double getFillPercentage() {
+            return (fillLevel / capacity) * 100;
+        }
+        
+        NdPoint getLocation() {
+            return new NdPoint(x, y);
+        }
+    }
+    
+    public Vehicle(ContinuousSpace<Object> space, int id, String type, double speed) {
+        this.space = space;
+        this.id = id;
+        this.type = type;
+        this.speed = speed;
+        this.direction = Math.random() * 2 * Math.PI; // Random initial direction
+        this.previousPosition = null; // Will be set on first step
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // Store current position for path crossing detection
+        if (previousPosition == null) {
+            previousPosition = space.getLocation(this);
+        } else {
+            previousPosition = new NdPoint(space.getLocation(this).getX(), space.getLocation(this).getY());
+        }
+        
+        // 1. Process received messages
+        processMessages();
+        
+        // 2. Check if collecting from bin
+        if (isCollectingFromBin) {
+            status = "collecting";
+            waitCounter++;
+            if (waitCounter >= COLLECTION_DURATION) {
+                // Collection finished
+                isCollectingFromBin = false;
+                waitCounter = 0;
+                
+                // Only attempt to empty if targetBinId is not null
+                if (targetBinId != null) {
+                    System.out.println("Vehicle " + id + " (" + type + ") finished collecting garbage from bin " + targetBinId);
+                    
+                    // Empty the bin
+                    emptyTargetBin();
+                    
+                    // Remove bin assignment
+                    binAssignments.remove(targetBinId);
+                    
+                    // Remove from global being serviced
+                    synchronized(globalBeingServiced) {
+                        globalBeingServiced.remove(targetBinId);
+                    }
+                    
+                    // Record last empty time
+                    lastEmptyTime.put(targetBinId, System.currentTimeMillis());
+                    
+                    // Clear target
+                    targetBinId = null;
+                    targetDestination = null;
+                    
+                    // Also remove from announced intentions
+                    announcedIntentions.remove(targetBinId);
+                    
+                    status = "finished collection";
+                } else {
+                    System.out.println("Vehicle " + id + " (" + type + ") finished collecting garbage, but targetBinId is null");
+                    status = "error: null target";
+                }
+            } else {
+                // Still collecting - skip remaining steps
+                if (targetBinId != null) {
+                    System.out.println("Vehicle " + id + " (" + type + ") collecting garbage from bin " + targetBinId + ": " + 
+                                     waitCounter + "/" + COLLECTION_DURATION + " ticks");
+                } else {
+                    System.out.println("Vehicle " + id + " (" + type + ") collecting garbage: " + 
+                                     waitCounter + "/" + COLLECTION_DURATION + " ticks (targetBinId is null)");
+                }
+                return;
+            }
+        }
+        
+        // 3. Check if waiting for coordination
+        if (waitingForCoordination) {
+            status = "coordinating";
+            if (System.currentTimeMillis() - coordinationStartTime > COORDINATION_WAIT_TIME) {
+                // Timeout expired, make a decision
+                decideBinAssignment();
+            } else {
+                // Still waiting for coordination - skip remaining steps
+                System.out.println("Vehicle " + id + " (" + type + ") waiting for coordination responses about bin " + coordinationBinId);
+                return;
+            }
+        }
+        
+        // 4. If no target, check if there's a bin we should go to
+        if (targetBinId == null && !waitingForCoordination) {
+            status = "seeking target";
+            checkForBinAssignment();
+        }
+        
+        // 5. Move the vehicle
+        moveVehicle();
+        
+        // 6. Check if we've reached a target bin
+        checkBinReached();
+        
+        // 7. Check if we need to communicate with other vehicles
+        checkForVehiclesToCommunicateWith();
+        
+        // 8. Broadcast our current status (new)
+        broadcastStatus();
+    }
+    
+    // New method to broadcast vehicle status to other vehicles
+    private void broadcastStatus() {
+        String content = "STATUS:" + id + ":" + targetBinId + ":" + status + ":" + System.currentTimeMillis();
+        Message statusMsg = new Message(id, "VEHICLE_STATUS", content);
+        
+        // Find other vehicles in communication range
+        Context<Object> context = ContextUtils.getContext(this);
+        NdPoint myPoint = space.getLocation(this);
+        
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && obj != this) {
+                Vehicle other = (Vehicle) obj;
+                
+                // Check if within communication range
+                NdPoint otherPoint = space.getLocation(other);
+                double vehicleDistance = space.getDistance(myPoint, otherPoint);
+                
+                if (vehicleDistance <= COMMUNICATION_RADIUS) {
+                    other.receiveMessage(statusMsg);
+                }
+            }
+        }
+    }
+    
+    private void checkForBinAssignment() {
+        // Find the closest bin that needs service
+        BinInfo closestBin = null;
+        double minDistance = Double.MAX_VALUE;
+        NdPoint myPoint = space.getLocation(this);
+        
+        for (BinInfo binInfo : knownBins.values()) {
+            int binId = binInfo.id;
+            
+            // Skip if bin's fill level is less than 70%
+            if (binInfo.getFillPercentage() < 70.0) {
+                continue;
+            }
+            
+            // Skip if this bin is already being serviced
+            synchronized(globalBeingServiced) {
+                if (globalBeingServiced.contains(binId)) {
+                    continue;
+                }
+            }
+            
+            // Skip if this bin was recently emptied
+            Long lastEmptyTimeForBin = lastEmptyTime.get(binId);
+            if (lastEmptyTimeForBin != null && 
+                System.currentTimeMillis() - lastEmptyTimeForBin < EMPTY_COOLDOWN) {
+                continue;
+            }
+            
+            // Calculate our distance to the bin
+            NdPoint binPoint = binInfo.getLocation();
+            double distance = space.getDistance(myPoint, binPoint);
+            
+            // Check if this bin isn't assigned to any vehicle yet
+            VehicleIntent assignment = binAssignments.get(binId);
+            
+            // If not assigned OR assigned to us already
+            if (assignment == null || assignment.vehicleId == id) {
+                // If this is the closest bin so far, update
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestBin = binInfo;
+                }
+            }
+        }
+        
+        // If we found a closest bin to service
+        if (closestBin != null) {
+            int binId = closestBin.id;
+            
+            // Check if any other vehicle is assigned
+            VehicleIntent existingAssignment = binAssignments.get(binId);
+            if (existingAssignment != null && existingAssignment.vehicleId != id) {
+                // Skip if already assigned to another vehicle
+                return;
+            }
+            
+            // Mark bin as being serviced globally
+            synchronized(globalBeingServiced) {
+                // Double-check no one else took it while we were deciding
+                if (globalBeingServiced.contains(binId)) {
+                    return;
+                }
+                globalBeingServiced.add(binId);
+            }
+            
+            // Simply assign ourselves directly if we're the closest
+            double distanceToBin = space.getDistance(myPoint, closestBin.getLocation());
+            binAssignments.put(binId, new VehicleIntent(id, System.currentTimeMillis(), distanceToBin));
+            targetBinId = binId;
+            targetDestination = closestBin.getLocation();
+            
+            // Save that we've announced intentions
+            announcedIntentions.add(binId);
+            
+            System.out.println("Vehicle " + id + " (" + type + ") assigned itself to bin " + binId + 
+                             " (" + closestBin.areaType + ", distance: " + String.format("%.2f", distanceToBin) + ")");
+                             
+            // If other vehicles are nearby, broadcast our intention
+            broadcastIntention(binId, distanceToBin);
+            
+            status = "heading to bin";
+        }
+    }
+    
+    private void broadcastIntention(int binId, double distance) {
+        String content = "INTENT:" + binId + ":" + id + ":" + distance + ":" + System.currentTimeMillis();
+        Message intentMsg = new Message(id, "VEHICLE_INTENT", content);
+        
+        // Find other vehicles in communication range
+        Context<Object> context = ContextUtils.getContext(this);
+        NdPoint myPoint = space.getLocation(this);
+        
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && obj != this) {
+                Vehicle other = (Vehicle) obj;
+                
+                // Check if within communication range
+                NdPoint otherPoint = space.getLocation(other);
+                double vehicleDistance = space.getDistance(myPoint, otherPoint);
+                
+                if (vehicleDistance <= COMMUNICATION_RADIUS) {
+                    other.receiveMessage(intentMsg);
+                    System.out.println("Vehicle " + id + " (" + type + ") announced intention for bin " + 
+                                     binId + " to Vehicle " + other.getId() + 
+                                     " (my distance: " + String.format("%.2f", distance) + ")");
+                }
+            }
+        }
+    }
+    
+    private void checkForVehiclesToCommunicateWith() {
+        // Find other vehicles in communication range
+        Context<Object> context = ContextUtils.getContext(this);
+        NdPoint myPoint = space.getLocation(this);
+        
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && obj != this) {
+                Vehicle other = (Vehicle) obj;
+                
+                // Check if within communication range
+                NdPoint otherPoint = space.getLocation(other);
+                double distance = space.getDistance(myPoint, otherPoint);
+                
+                if (distance <= COMMUNICATION_RADIUS) {
+                    // Share information about bins and current assignments
+                    shareBinInfo(other);
+                    
+                    // If we have a target bin, announce our intention
+                    if (targetBinId != null && !announcedIntentions.contains(targetBinId)) {
+                        BinInfo binInfo = knownBins.get(targetBinId);
+                        if (binInfo != null) {
+                            NdPoint binPoint = binInfo.getLocation();
+                            double binDistance = space.getDistance(myPoint, binPoint);
+                            broadcastIntention(targetBinId, binDistance);
+                            announcedIntentions.add(targetBinId);
+                        }
+                    }
+                    
+                    // Check for path crossing
+                    NdPoint otherPreviousPosition = other.getPreviousPosition();
+                    if (previousPosition != null && otherPreviousPosition != null) {
+                        boolean pathsCrossed = detectPathCrossing(
+                            previousPosition, myPoint,
+                            otherPreviousPosition, otherPoint);
+                        
+                        if (pathsCrossed) {
+                            System.out.println("*** PATHS CROSSED: Vehicles " + id + " and " + other.getId() + " have crossed paths");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private void shareBinInfo(Vehicle other) {
+        // Share info about any bins we know
+        for (BinInfo binInfo : knownBins.values()) {
+            String content = "BIN_INFO:" + binInfo.id + ":" + binInfo.x + ":" + binInfo.y + 
+                           ":" + binInfo.fillLevel + ":" + binInfo.capacity + ":" + binInfo.areaType;
+            Message binMsg = new Message(id, "BIN_SHARED", content);
+            
+            other.receiveMessage(binMsg);
+        }
+        
+        // Share info about current bin assignments
+        for (Map.Entry<Integer, VehicleIntent> entry : binAssignments.entrySet()) {
+            int binId = entry.getKey();
+            VehicleIntent intent = entry.getValue();
+            
+            String content = "ASSIGNMENT:" + binId + ":" + intent.vehicleId + ":" + intent.distance + ":" + intent.timestamp;
+            Message assignMsg = new Message(id, "BIN_ASSIGNMENT", content);
+            
+            other.receiveMessage(assignMsg);
+        }
+        
+        // Share which bins are being serviced globally
+        synchronized(globalBeingServiced) {
+            if (!globalBeingServiced.isEmpty()) {
+                StringBuilder contentBuilder = new StringBuilder("SERVICING:");
+                for (Integer binId : globalBeingServiced) {
+                    contentBuilder.append(binId).append(":");
+                }
+                Message servicingMsg = new Message(id, "BINS_SERVICING", contentBuilder.toString());
+                other.receiveMessage(servicingMsg);
+            }
+        }
+    }
+    
+    // Detect if two line segments intersect (paths have crossed)
+    private boolean detectPathCrossing(NdPoint p1, NdPoint p2, NdPoint p3, NdPoint p4) {
+        // Handle wrap-around for path crossing detection
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        
+        // Get the four points of the two line segments
+        double x1 = p1.getX();
+        double y1 = p1.getY();
+        double x2 = p2.getX();
+        double y2 = p2.getY();
+        double x3 = p3.getX();
+        double y3 = p3.getY();
+        double x4 = p4.getX();
+        double y4 = p4.getY();
+        
+        // Adjust for possible wrap-around
+        if (Math.abs(x2 - x1) > width/2) {
+            if (x2 > x1) x2 -= width;
+            else x1 -= width;
+        }
+        if (Math.abs(y2 - y1) > height/2) {
+            if (y2 > y1) y2 -= height;
+            else y1 -= height;
+        }
+        if (Math.abs(x4 - x3) > width/2) {
+            if (x4 > x3) x4 -= width;
+            else x3 -= width;
+        }
+        if (Math.abs(y4 - y3) > height/2) {
+            if (y4 > y3) y4 -= height;
+            else y3 -= height;
+        }
+        
+        // Check if the two line segments intersect
+        double denominator = ((y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1));
+        if (denominator == 0) {
+            return false; // Lines are parallel
+        }
+        
+        double ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denominator;
+        double ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denominator;
+        
+        // Return true if the intersection point is on both line segments
+        return (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1);
+    }
+    
+    private void moveVehicle() {
+        NdPoint myPoint = space.getLocation(this);
+        double x, y;
+        
+        if (targetDestination != null) {
+            // We have a target to move to - calculate direction to target
+            double targetX = targetDestination.getX();
+            double targetY = targetDestination.getY();
+            
+            // Calculate direction vector
+            double dx = targetX - myPoint.getX();
+            double dy = targetY - myPoint.getY();
+            
+            // Handle wrapping around the edges
+            double width = space.getDimensions().getWidth();
+            double height = space.getDimensions().getHeight();
+            
+            // Check if it's shorter to go around the edge
+            if (dx > width / 2) dx -= width;
+            else if (dx < -width / 2) dx += width;
+            if (dy > height / 2) dy -= height;
+            else if (dy < -height / 2) dy += height;
+            
+            // Update direction to point toward target
+            direction = Math.atan2(dy, dx);
+            
+            // Calculate new position
+            x = myPoint.getX() + Math.cos(direction) * speed;
+            y = myPoint.getY() + Math.sin(direction) * speed;
+            
+            if (targetBinId != null) {
+                BinInfo binInfo = knownBins.get(targetBinId);
+                String areaType = (binInfo != null) ? binInfo.areaType : "UNKNOWN";
+                status = "moving to bin " + targetBinId;
+                
+                System.out.println("Vehicle " + id + " (" + type + ") moving toward bin " + targetBinId + 
+                                 " (" + areaType + ") at (" + targetX + ", " + targetY + ")");
+            } else {
+                status = "moving to target";
+                System.out.println("Vehicle " + id + " (" + type + ") moving toward target at (" + 
+                                 targetX + ", " + targetY + ")");
+            }
+        } else {
+            // No target - random movement
+            status = "random movement";
+            
+            // Occasionally change direction
+            if (Math.random() < 0.05) {
+                direction = Math.random() * 2 * Math.PI;
+            }
+            
+            // Move in current direction
+            x = myPoint.getX() + Math.cos(direction) * speed;
+            y = myPoint.getY() + Math.sin(direction) * speed;
+        }
+        
+        // Wrap around if vehicle goes out of bounds
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        
+        if (x < 0) x += width;
+        if (x >= width) x -= width;
+        if (y < 0) y += height;
+        if (y >= height) y -= height;
+        
+        space.moveTo(this, x, y);
+    }
+    
+    private void checkBinReached() {
+        if (targetDestination == null || targetBinId == null) {
+            return;
+        }
+        
+        NdPoint myPoint = space.getLocation(this);
+        double distance = space.getDistance(myPoint, targetDestination);
+        
+        // If we're close enough to the bin
+        if (distance < 1.0) {
+            System.out.println("Vehicle " + id + " (" + type + ") has reached bin " + targetBinId + "! Starting collection.");
+            
+            // Mark bin as being serviced
+            if (!markBinAsBeingServiced()) {
+                // If we couldn't mark the bin (maybe it was already serviced by another vehicle),
+                // just abandon this target
+                System.out.println("Vehicle " + id + " (" + type + ") couldn't mark bin " + targetBinId + 
+                                 " as serviced. Abandoning target.");
+                
+                // Remove from global being serviced
+                synchronized(globalBeingServiced) {
+                    globalBeingServiced.remove(targetBinId);
+                }
+                
+                targetBinId = null;
+                targetDestination = null;
+                return;
+            }
+            
+            // Start collecting garbage
+            isCollectingFromBin = true;
+            waitCounter = 0;
+        }
+    }
+    
+    private boolean markBinAsBeingServiced() {
+        Context<Object> context = ContextUtils.getContext(this);
+        
+        for (Object obj : context) {
+            if (obj instanceof GarbageBin && ((GarbageBin) obj).getId() == targetBinId) {
+                // Check if bin is already being serviced
+                if (((GarbageBin) obj).isBeingServiced()) {
+                    return false;
+                }
+                
+                ((GarbageBin) obj).markAsBeingServiced();
+                return true;
+            }
+        }
+        
+        return false; // Bin not found
+    }
+    
+    private void emptyTargetBin() {
+        // Guard against null targetBinId
+        if (targetBinId == null) {
+            System.out.println("Vehicle " + id + " (" + type + ") attempted to empty null targetBinId");
+            return;
+        }
+        
+        Context<Object> context = ContextUtils.getContext(this);
+        boolean binFound = false;
+        
+        for (Object obj : context) {
+            if (obj instanceof GarbageBin && ((GarbageBin) obj).getId() == targetBinId) {
+                ((GarbageBin) obj).emptyBin();
+                binFound = true;
+                break;
+            }
+        }
+        
+        if (!binFound) {
+            System.out.println("Vehicle " + id + " (" + type + ") couldn't find bin " + targetBinId + " to empty");
+        }
+    }
+    
+    private void processMessages() {
+        if (inbox.isEmpty()) {
+            return;
+        }
+        
+        System.out.println("Vehicle " + id + " (" + type + ") processing " + inbox.size() + " messages");
+        
+        // Process messages by type for better organization
+        List<Message> binBroadcasts = new ArrayList<>();
+        List<Message> binShared = new ArrayList<>();
+        List<Message> vehicleIntents = new ArrayList<>();
+        List<Message> binAssignmentMsgs = new ArrayList<>();
+        List<Message> vehicleStatus = new ArrayList<>();
+        List<Message> binsServicing = new ArrayList<>();
+        
+        // Sort messages by type
+        for (Message msg : inbox) {
+            switch (msg.getType()) {
+                case "BIN_BROADCAST":
+                    binBroadcasts.add(msg);
+                    break;
+                case "BIN_SHARED":
+                    binShared.add(msg);
+                    break;
+                case "VEHICLE_INTENT":
+                    vehicleIntents.add(msg);
+                    break;
+                case "BIN_ASSIGNMENT":
+                    binAssignmentMsgs.add(msg);
+                    break;
+                case "VEHICLE_STATUS":
+                    vehicleStatus.add(msg);
+                    break;
+                case "BINS_SERVICING":
+                    binsServicing.add(msg);
+                    break;
+            }
+        }
+        
+        // Process bins being serviced first to avoid conflicts
+        for (Message msg : binsServicing) {
+            handleBinsServicing(msg);
+        }
+        
+        // Process vehicle status updates
+        for (Message msg : vehicleStatus) {
+            handleVehicleStatus(msg);
+        }
+        
+        // Process vehicle intents next
+        for (Message msg : vehicleIntents) {
+            handleVehicleIntent(msg);
+        }
+        
+        // Process bin assignments
+        for (Message msg : binAssignmentMsgs) {
+            handleBinAssignment(msg);
+        }
+        
+        // Process bin info next
+        for (Message msg : binShared) {
+            handleBinShared(msg);
+        }
+        
+        // Finally process bin broadcasts
+        for (Message msg : binBroadcasts) {
+            handleBinBroadcast(msg);
+        }
+        
+        inbox.clear();
+        
+        // After processing all messages, check if we should update our target based on newest bin information
+        if (!isCollectingFromBin && !waitingForCoordination) {
+            checkForBetterBin();
+        }
+    }
+    
+    private void handleBinsServicing(Message msg) {
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 2 && parts[0].equals("SERVICING")) {
+            synchronized(globalBeingServiced) {
+                for (int i = 1; i < parts.length; i++) {
+                    try {
+                        int binId = Integer.parseInt(parts[i]);
+                        globalBeingServiced.add(binId);
+                    } catch (NumberFormatException e) {
+                        // Skip invalid bin IDs
+                    }
+                }
+            }
+        }
+    }
+    
+    private void handleVehicleStatus(Message msg) {
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 5 && parts[0].equals("STATUS")) {
+            int vehicleId = Integer.parseInt(parts[1]);
+            String targetBinIdStr = parts[2];
+            String status = parts[3];
+            long timestamp = Long.parseLong(parts[4]);
+            
+            // Only consider recent status updates
+            if (System.currentTimeMillis() - timestamp > 3000) {
+                return; // Skip outdated status
+            }
+            
+            // If this vehicle is targeting a bin
+            if (!targetBinIdStr.equals("null")) {
+                int otherTargetBinId = Integer.parseInt(targetBinIdStr);
+                
+                // If we're also targeting this bin and not collecting yet
+                if (targetBinId != null && targetBinId == otherTargetBinId && !isCollectingFromBin) {
+                    // Check if the other vehicle is closer or has higher priority
+                    NdPoint myPoint = space.getLocation(this);
+                    BinInfo binInfo = knownBins.get(targetBinId);
+                    
+                    if (binInfo != null) {
+                        NdPoint binPoint = binInfo.getLocation();
+                        double myDistance = space.getDistance(myPoint, binPoint);
+                        
+                        // Find the other vehicle to get its distance
+                        Context<Object> context = ContextUtils.getContext(this);
+                        for (Object obj : context) {
+                            if (obj instanceof Vehicle && ((Vehicle) obj).getId() == vehicleId) {
+                                Vehicle other = (Vehicle) obj;
+                                NdPoint otherPoint = space.getLocation(other);
+                                double otherDistance = space.getDistance(otherPoint, binPoint);
+                                
+                                // If other vehicle is closer or (equal distance but lower ID)
+                                if (otherDistance < myDistance || 
+                                    (otherDistance == myDistance && vehicleId < id)) {
+                                    System.out.println("Vehicle " + id + " (" + type + 
+                                                     ") abandoning target bin " + targetBinId + 
+                                                     " to avoid conflict with Vehicle " + vehicleId);
+                                    
+                                    // Abandon our target
+                                    targetBinId = null;
+                                    targetDestination = null;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private void checkForBetterBin() {
+        // Only consider changing target if we're not currently collecting
+        if (isCollectingFromBin || waitingForCoordination) {
+            return;
+        }
+        
+        // If we have no target, no need to check (checkForBinAssignment will handle it)
+        if (targetBinId == null) {
+            return;
+        }
+        
+        NdPoint myPoint = space.getLocation(this);
+        BinInfo currentTarget = knownBins.get(targetBinId);
+        
+        if (currentTarget == null) {
+            return; // Target info not found
+        }
+        
+        double currentDistance = space.getDistance(myPoint, currentTarget.getLocation());
+        
+        // Look for a bin that is significantly closer (at least 30% closer)
+        for (BinInfo binInfo : knownBins.values()) {
+            // Skip if it's our current target or below 70% full
+            if (binInfo.id == targetBinId || binInfo.getFillPercentage() < 70.0) {
+                continue;
+            }
+            
+            // Skip if already serviced or assigned to another vehicle
+            VehicleIntent assignment = binAssignments.get(binInfo.id);
+            if (assignment != null && assignment.vehicleId != id) {
+                continue;
+            }
+            
+            // Skip if being serviced
+            synchronized(globalBeingServiced) {
+                if (globalBeingServiced.contains(binInfo.id)) {
+                    continue;
+                }
+            }
+            
+            double distance = space.getDistance(myPoint, binInfo.getLocation());
+            
+            // If this bin is at least 30% closer than our current target
+            if (distance < currentDistance * 0.7) {
+                System.out.println("Vehicle " + id + " (" + type + ") found a closer bin " + binInfo.id + 
+                                 " (distance: " + String.format("%.2f", distance) + 
+                                 " vs current: " + String.format("%.2f", currentDistance) + ")");
+                
+                // Mark the new bin as being serviced
+                synchronized(globalBeingServiced) {
+                    if (globalBeingServiced.contains(binInfo.id)) {
+                        continue; // Skip if someone just took it
+                    }
+                    globalBeingServiced.add(binInfo.id);
+                }
+                
+                // Update our target
+                targetBinId = binInfo.id;
+                targetDestination = binInfo.getLocation();
+                
+                // Update bin assignment
+                binAssignments.put(binInfo.id, new VehicleIntent(id, System.currentTimeMillis(), distance));
+                
+                // Broadcast our new intention
+                broadcastIntention(binInfo.id, distance);
+                announcedIntentions.add(binInfo.id);
+                
+                // Only pick one better bin
+                break;
+            }
+        }
+    }
+    
+    private void handleBinBroadcast(Message msg) {
+        // Parse the bin broadcast
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 6 && parts[0].equals("BIN_STATUS")) {
+            int binId = Integer.parseInt(parts[1]);
+            double binX = Double.parseDouble(parts[2]);
+            double binY = Double.parseDouble(parts[3]);
+            double fillLevel = Double.parseDouble(parts[4]);
+            double capacity = Double.parseDouble(parts[5]);
+            String areaType = (parts.length >= 7) ? parts[6] : "UNKNOWN";
+            
+            // Only consider bins with fill level >= 70%
+            double fillPercentage = (fillLevel/capacity) * 100;
+            if (fillPercentage >= 70.0) {
+                // Calculate distance to bin
+                NdPoint myPoint = space.getLocation(this);
+                NdPoint binPoint = new NdPoint(binX, binY);
+                double distance = space.getDistance(myPoint, binPoint);
+                
+                // Store or update bin info
+                BinInfo binInfo = new BinInfo(binId, binX, binY, fillLevel, capacity, areaType);
+                knownBins.put(binId, binInfo);
+                
+                System.out.println("Vehicle " + id + " (" + type + ") received broadcast from bin " + 
+                                 binId + " (" + areaType + ") at (" + binX + ", " + binY + "), " + 
+                                 String.format("%.1f", fillPercentage) + "% full, distance: " +
+                                 String.format("%.2f", distance));
+                
+                // Check if this bin is already being serviced
+                boolean isBeingServiced;
+                synchronized(globalBeingServiced) {
+                    isBeingServiced = globalBeingServiced.contains(binId);
+                }
+                
+                // If we have no target bin and bin is not being serviced, immediately consider this one
+                if (targetBinId == null && !waitingForCoordination && !isCollectingFromBin && !isBeingServiced) {
+                    System.out.println("Vehicle " + id + " (" + type + ") considering bin " + binId + " as a target");
+                    
+                    // Check if already assigned to another vehicle
+                    VehicleIntent assignment = binAssignments.get(binId);
+                    if (assignment == null || assignment.vehicleId == id) {
+                        // Check if the bin was recently emptied
+                        Long lastEmptyTimeForBin = lastEmptyTime.get(binId);
+                        if (lastEmptyTimeForBin == null || 
+                            System.currentTimeMillis() - lastEmptyTimeForBin >= EMPTY_COOLDOWN) {
+                            
+                            // Mark the bin as being serviced globally
+                            synchronized(globalBeingServiced) {
+                                if (globalBeingServiced.contains(binId)) {
+                                    return; // Skip if someone just took it
+                                }
+                                globalBeingServiced.add(binId);
+                            }
+                            
+                            targetBinId = binId;
+                            targetDestination = binPoint;
+                            
+                            // Record our assignment
+                            binAssignments.put(binId, new VehicleIntent(id, System.currentTimeMillis(), distance));
+                            
+                            // Broadcast our intention
+                            broadcastIntention(binId, distance);
+                            announcedIntentions.add(binId);
+                            
+                            System.out.println("Vehicle " + id + " (" + type + ") assigned to bin " + binId + 
+                                            " from direct broadcast (distance: " + String.format("%.2f", distance) + ")");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private void handleBinShared(Message msg) {
+        // Parse the shared bin info
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 6 && parts[0].equals("BIN_INFO")) {
+            int binId = Integer.parseInt(parts[1]);
+            double binX = Double.parseDouble(parts[2]);
+            double binY = Double.parseDouble(parts[3]);
+            double fillLevel = Double.parseDouble(parts[4]);
+            double capacity = Double.parseDouble(parts[5]);
+            String areaType = (parts.length >= 7) ? parts[6] : "UNKNOWN";
+            
+            // Store or update bin info only if fill level >= 70%
+            double fillPercentage = (fillLevel/capacity) * 100;
+            if (fillPercentage >= 70.0) {
+                BinInfo binInfo = new BinInfo(binId, binX, binY, fillLevel, capacity, areaType);
+                knownBins.put(binId, binInfo);
+                
+                System.out.println("Vehicle " + id + " (" + type + ") received shared info about bin " + 
+                                 binId + " (" + areaType + ") at (" + binX + ", " + binY + "), " + 
+                                 String.format("%.1f", fillPercentage) + "% full");
+            }
+        }
+    }
+    
+    private void handleVehicleIntent(Message msg) {
+        // Parse the vehicle intent
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 5 && parts[0].equals("INTENT")) {
+            int binId = Integer.parseInt(parts[1]);
+            int vehicleId = Integer.parseInt(parts[2]);
+            double distance = Double.parseDouble(parts[3]);
+            long timestamp = Long.parseLong(parts[4]);
+            
+            // Store the intent
+            VehicleIntent currentIntent = binAssignments.get(binId);
+            
+            // If we don't have an intent record for this bin, or this vehicle is closer/has higher priority
+            if (currentIntent == null) {
+                binAssignments.put(binId, new VehicleIntent(vehicleId, timestamp, distance));
+                System.out.println("Vehicle " + id + " (" + type + ") recorded new intent for bin " + 
+                                 binId + " by Vehicle " + vehicleId);
+                
+                // Mark bin as being serviced in the global list
+                if (vehicleId != id) {
+                    synchronized(globalBeingServiced) {
+                        globalBeingServiced.add(binId);
+                    }
+                }
+            } else {
+                // Decision logic: closer vehicle or if equal distance, lower ID wins
+                if (distance < currentIntent.distance - 1.0 || 
+                    (Math.abs(distance - currentIntent.distance) <= 1.0 && vehicleId < currentIntent.vehicleId)) {
+                    
+                    binAssignments.put(binId, new VehicleIntent(vehicleId, timestamp, distance));
+                    System.out.println("Vehicle " + id + " (" + type + ") updated intent for bin " + 
+                                     binId + " to Vehicle " + vehicleId + " (better candidate)");
+                    
+                    // If we were targeting this bin, clear our target
+                    if (targetBinId != null && targetBinId == binId && vehicleId != id) {
+                        System.out.println("Vehicle " + id + " (" + type + ") abandoning target bin " + 
+                                         binId + " as Vehicle " + vehicleId + " is a better candidate");
+                        targetBinId = null;
+                        targetDestination = null;
+                        
+                        // Only remove from global being serviced if not collecting
+                        if (!isCollectingFromBin) {
+                            synchronized(globalBeingServiced) {
+                                // Let the other vehicle handle this bin
+                                globalBeingServiced.add(binId);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // If we're in coordination for this bin, note the response
+            if (waitingForCoordination && coordinationBinId == binId) {
+                System.out.println("Vehicle " + id + " (" + type + ") received intent for bin " + 
+                                 binId + " during coordination");
+            }
+        }
+    }
+    
+    private void handleBinAssignment(Message msg) {
+        // Parse the bin assignment
+        String[] parts = msg.getContent().split(":");
+        if (parts.length >= 5 && parts[0].equals("ASSIGNMENT")) {
+            int binId = Integer.parseInt(parts[1]);
+            int vehicleId = Integer.parseInt(parts[2]);
+            double distance = Double.parseDouble(parts[3]);
+            long timestamp = Long.parseLong(parts[4]);
+            
+            // Store or update the assignment
+            VehicleIntent currentIntent = binAssignments.get(binId);
+            
+            if (currentIntent == null || timestamp > currentIntent.timestamp) {
+                binAssignments.put(binId, new VehicleIntent(vehicleId, timestamp, distance));
+                System.out.println("Vehicle " + id + " (" + type + ") updated assignment for bin " + 
+                                 binId + " to Vehicle " + vehicleId + " (more recent info)");
+                
+                // Mark bin as being serviced in global list if assigned to another vehicle
+                if (vehicleId != id) {
+                    synchronized(globalBeingServiced) {
+                        globalBeingServiced.add(binId);
+                    }
+                }
+                
+                // If we were targeting this bin but it's now assigned to someone else, clear our target
+                if (targetBinId != null && targetBinId == binId && vehicleId != id) {
+                    System.out.println("Vehicle " + id + " (" + type + ") abandoning target bin " + 
+                                     binId + " as it's now assigned to Vehicle " + vehicleId);
+                    targetBinId = null;
+                    targetDestination = null;
+                }
+            }
+        }
+    }
+    
+    private void decideBinAssignment() {
+        if (!waitingForCoordination) return;
+        
+        int binId = coordinationBinId;
+        VehicleIntent assignment = binAssignments.get(binId);
+        
+        if (assignment != null) {
+            System.out.println("Vehicle " + id + " (" + type + ") finished coordination for bin " + 
+                             binId + ". Assigned to Vehicle " + assignment.vehicleId);
+            
+            // If we're responsible, set this bin as our target
+            if (assignment.vehicleId == id) {
+                BinInfo binInfo = knownBins.get(binId);
+                if (binInfo != null) {
+                    targetBinId = binId;
+                    targetDestination = binInfo.getLocation();
+                    
+                    synchronized(globalBeingServiced) {
+                        globalBeingServiced.add(binId);
+                    }
+                    
+                    System.out.println("Vehicle " + id + " (" + type + ") is now assigned to bin " + 
+                                     binId + " and heading there");
+                }
+            } else {
+                // Mark as being serviced by another vehicle
+                synchronized(globalBeingServiced) {
+                    globalBeingServiced.add(binId);
+                }
+            }
+        }
+        
+        // Reset coordination state
+        waitingForCoordination = false;
+        coordinationBinId = -1;
+    }
+    
+    public void receiveMessage(Message msg) {
+        inbox.add(msg);
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public String getType() {
+        return type;
+    }
+    
+    public NdPoint getPreviousPosition() {
+        return previousPosition;
+    }
+    
+    public String getStatus() {
+        return status;
+    }
+}

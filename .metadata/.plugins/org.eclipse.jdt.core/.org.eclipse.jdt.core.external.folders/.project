@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<projectDescription>
+	<name>.org.eclipse.jdt.core.external.folders</name>
+	<comment></comment>
+	<projects>
+	</projects>
+	<buildSpec>
+	</buildSpec>
+	<natures>
+	</natures>
+	<linkedResources>
+		<link>
+			<name>.link1</name>
+			<type>2</type>
+			<location>/Users/macbookpro/.groovy/greclipse/global_dsld_support</location>
+		</link>
+		<link>
+			<name>.link2</name>
+			<type>2</type>
+			<location>/Applications/Repast Simphony 2.11.0/Eclipse.app/Contents/Eclipse/plugins/org.codehaus.groovy_3.0.21.v202403311524-e2403/plugin_dsld_support</location>
+		</link>
+	</linkedResources>
+</projectDescription>

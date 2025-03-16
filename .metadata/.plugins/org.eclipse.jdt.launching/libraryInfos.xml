@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<libraryInfos>
+    <libraryInfo home="/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home" version="21.0.5"/>
+    <libraryInfo home="/Applications/Repast Simphony 2.11.0/Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.openjdk.hotspot.jre.full.macosx.x86_64_17.0.10.v20240120-1143" version="17.0.10"/>
+    <libraryInfo home="/Library/Java/JavaVirtualMachines/jdk-14.0.2.jdk/Contents/Home" version="14.0.2"/>
+    <libraryInfo home="/Applications/Repast Simphony 2.11.0/Eclipse.app/Contents/Eclipse/plugins/org.eclipse.justj.openjdk.hotspot.jre.full.macosx.x86_64_17.0.10.v20240120-1143/jre" version="17.0.10"/>
+    <libraryInfo home="/usr/local/Cellar/openjdk@21/21.0.5/libexec/openjdk.jdk/Contents/Home" version="21.0.5"/>
+    <libraryInfo home="/Library/Java/JavaVirtualMachines/temurin-22.jdk/Contents/Home" version="22.0.2"/>
+</libraryInfos>

@@ -1,0 +1,238 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+import repast.simphony.random.RandomHelper;
+import java.util.List;
+import java.util.ArrayList;
+
+public class Vehicle {
+    private ContinuousSpace<Object> space;
+    private int id;
+    private String type;
+    private double speed;
+    private double direction; // in radians
+    private List<Message> inbox = new ArrayList<>();
+    
+    // Vehicle status
+    private double capacity; // Current capacity (randomly changes in simulation)
+    private boolean sendingMessage = false;
+    
+    public Vehicle(ContinuousSpace<Object> space, int id, String type, double speed) {
+        this.space = space;
+        this.id = id;
+        this.type = type;
+        this.speed = speed;
+        this.direction = Math.random() * 2 * Math.PI; // Random initial direction
+        this.capacity = 100.0; // Start with 100% capacity
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // 1. Move the vehicle
+        moveVehicle();
+        
+        // 2. Process received messages
+        processMessages();
+        
+        // 3. Randomly change capacity to simulate waste collection
+        if (Math.random() < 0.1) { // 10% chance per step
+            capacity = Math.max(0, capacity - RandomHelper.nextDoubleFromTo(5, 15));
+            System.out.println("Vehicle " + id + " (" + type + ") capacity now: " + 
+                               String.format("%.1f", capacity) + "%");
+            
+            // If capacity is low, set flag to send message on next tick
+            if (capacity < 30.0 && !sendingMessage) {
+                sendingMessage = true;
+            }
+        }
+        
+        // 4. Send message about capacity if needed
+        if (sendingMessage) {
+            broadcastCapacityStatus();
+            sendingMessage = false;
+        }
+    }
+    
+    private void moveVehicle() {
+        NdPoint myPoint = space.getLocation(this);
+        double x = myPoint.getX() + Math.cos(direction) * speed;
+        double y = myPoint.getY() + Math.sin(direction) * speed;
+        
+        // Wrap around if vehicle goes out of bounds
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        
+        if (x < 0) x += width;
+        if (x >= width) x -= width;
+        if (y < 0) y += height;
+        if (y >= height) y -= height;
+        
+        space.moveTo(this, x, y);
+        
+        // Occasionally change direction
+        if (Math.random() < 0.05) {
+            direction = Math.random() * 2 * Math.PI;
+        }
+    }
+    
+    private void processMessages() {
+        if (inbox.isEmpty()) {
+            return;
+        }
+        
+        System.out.println("Vehicle " + id + " (" + type + ") processing " + inbox.size() + " messages");
+        
+        for (Message msg : inbox) {
+            System.out.println("Vehicle " + id + " (" + type + ") received message from Vehicle " + 
+                             msg.getSenderId() + ": " + msg.getContent());
+            
+            // If this is a capacity status message, check if we need to respond
+            if (msg.getType().equals("CAPACITY_STATUS")) {
+                handleCapacityStatus(msg);
+            }
+            else if (msg.getType().equals("ASSISTANCE_OFFER")) {
+                handleAssistanceOffer(msg);
+            }
+            else if (msg.getType().equals("ASSISTANCE_ACCEPTED")) {
+                handleAssistanceAccepted(msg);
+            }
+        }
+        
+        inbox.clear();
+    }
+    
+    private void broadcastCapacityStatus() {
+        String content = "Current capacity: " + String.format("%.1f", capacity) + "%, need assistance";
+        Message statusMsg = new Message(id, "CAPACITY_STATUS", content);
+        
+        // Find other vehicles within communication range
+        NdPoint myPoint = space.getLocation(this);
+        Context<Object> context = ContextUtils.getContext(this);
+        
+        System.out.println("Vehicle " + id + " (" + type + ") broadcasting capacity status: " + content);
+        
+        // Calculate communication range (half the grid size)
+        double width = space.getDimensions().getWidth();
+        double height = space.getDimensions().getHeight();
+        double commRange = Math.min(width, height) / 3; // One third of the grid
+        
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && obj != this) {
+                Vehicle other = (Vehicle) obj;
+                
+                // Check if within communication range
+                double distance = space.getDistance(myPoint, space.getLocation(other));
+                
+                if (distance <= commRange) {
+                    other.receiveMessage(statusMsg);
+                    System.out.println("Vehicle " + id + " (" + type + ") sent message to Vehicle " + 
+                                     other.getId() + " at distance " + String.format("%.1f", distance));
+                }
+            }
+        }
+    }
+    
+    private void handleCapacityStatus(Message msg) {
+        int senderId = msg.getSenderId();
+        
+        // Check if we have high enough capacity to help
+        if (capacity > 70.0) {
+            // We can offer assistance
+            String content = "Can provide assistance, my capacity: " + String.format("%.1f", capacity) + "%";
+            Message offerMsg = new Message(id, "ASSISTANCE_OFFER", content);
+            
+            // Find the sender vehicle
+            Context<Object> context = ContextUtils.getContext(this);
+            for (Object obj : context) {
+                if (obj instanceof Vehicle && ((Vehicle) obj).getId() == senderId) {
+                    Vehicle sender = (Vehicle) obj;
+                    
+                    // Check if still in range
+                    NdPoint myPoint = space.getLocation(this);
+                    NdPoint senderPoint = space.getLocation(sender);
+                    double distance = space.getDistance(myPoint, senderPoint);
+                    
+                    double width = space.getDimensions().getWidth();
+                    double height = space.getDimensions().getHeight();
+                    double commRange = Math.min(width, height) / 3;
+                    
+                    if (distance <= commRange) {
+                        sender.receiveMessage(offerMsg);
+                        System.out.println("Vehicle " + id + " (" + type + ") offered assistance to Vehicle " + 
+                                         senderId + " with capacity " + String.format("%.1f", capacity) + "%");
+                    }
+                    
+                    break;
+                }
+            }
+        }
+    }
+    
+    private void handleAssistanceOffer(Message msg) {
+        int offererId = msg.getSenderId();
+        
+        // Accept the first offer we receive
+        String content = "Accepting your assistance offer";
+        Message acceptMsg = new Message(id, "ASSISTANCE_ACCEPTED", content);
+        
+        // Find the offering vehicle
+        Context<Object> context = ContextUtils.getContext(this);
+        for (Object obj : context) {
+            if (obj instanceof Vehicle && ((Vehicle) obj).getId() == offererId) {
+                Vehicle offerer = (Vehicle) obj;
+                
+                // Check if still in range
+                NdPoint myPoint = space.getLocation(this);
+                NdPoint offererPoint = space.getLocation(offerer);
+                double distance = space.getDistance(myPoint, offererPoint);
+                
+                double width = space.getDimensions().getWidth();
+                double height = space.getDimensions().getHeight();
+                double commRange = Math.min(width, height) / 3;
+                
+                if (distance <= commRange) {
+                    offerer.receiveMessage(acceptMsg);
+                    System.out.println("Vehicle " + id + " (" + type + ") accepted assistance from Vehicle " + 
+                                     offererId);
+                    
+                    // Simulate capacity transfer (offerer takes some of our load)
+                    double transferAmount = Math.min(20.0, 100.0 - capacity);
+                    capacity += transferAmount;
+                    System.out.println("Vehicle " + id + " (" + type + ") transferred load. New capacity: " + 
+                                     String.format("%.1f", capacity) + "%");
+                }
+                
+                break;
+            }
+        }
+    }
+    
+    private void handleAssistanceAccepted(Message msg) {
+        int accepterId = msg.getSenderId();
+        
+        // Simulate taking load from the other vehicle
+        capacity -= 20.0;
+        System.out.println("Vehicle " + id + " (" + type + ") provided assistance to Vehicle " + 
+                         accepterId + ". New capacity: " + String.format("%.1f", capacity) + "%");
+    }
+    
+    public void receiveMessage(Message msg) {
+        inbox.add(msg);
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public String getType() {
+        return type;
+    }
+    
+    public double getCapacity() {
+        return capacity;
+    }
+}

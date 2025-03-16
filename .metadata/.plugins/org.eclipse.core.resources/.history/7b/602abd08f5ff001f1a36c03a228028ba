@@ -1,0 +1,92 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.space.grid.Grid;
+import repast.simphony.util.ContextUtils;
+
+/**
+ * Class representing a trash bin
+ */
+public class TrashBin {
+    private ContinuousSpace<Object> space;
+    private Grid<Object> grid;
+    private int capacity;
+    private int currentFillLevel;
+    private boolean needsCollection;
+    private int broadcastRadius;
+    
+    public TrashBin(ContinuousSpace<Object> space, Grid<Object> grid, int capacity) {
+        this.space = space;
+        this.grid = grid;
+        this.capacity = capacity;
+        this.currentFillLevel = 0;
+        this.needsCollection = false;
+        this.broadcastRadius = 5; // Default broadcast radius
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // Simulate garbage accumulation
+        int garbageAdded = RandomHelper.nextIntFromTo(1, 5);
+        currentFillLevel += garbageAdded;
+        
+        // Check if bin is getting full
+        if (currentFillLevel >= capacity * 0.8 && !needsCollection) {
+            needsCollection = true;
+            broadcastCollectionRequest();
+        }
+    }
+    
+    /**
+     * Broadcasts a collection request to vehicles within a specified radius
+     */
+    private void broadcastCollectionRequest() {
+        // Get bin's current location
+        NdPoint binLocation = space.getLocation(this);
+        
+        // Get context
+        Context<Object> context = ContextUtils.getContext(this);
+        
+        // Find all vehicles within radius
+        for (Object obj : context) {
+            if (obj instanceof GarbageTruck) {
+                GarbageTruck truck = (GarbageTruck) obj;
+                NdPoint truckLocation = space.getLocation(truck);
+                
+                // Calculate distance between bin and truck
+                double distance = space.getDistance(binLocation, truckLocation);
+                
+                // If truck is within broadcast radius, send collection request
+                if (distance <= broadcastRadius) {
+                    truck.receiveCollectionRequest(this, binLocation, currentFillLevel);
+                }
+            }
+        }
+    }
+    
+    public void empty() {
+        currentFillLevel = 0;
+        needsCollection = false;
+    }
+    
+    // Getters
+    public int getCurrentFillLevel() {
+        return currentFillLevel;
+    }
+    
+    public int getCapacity() {
+        return capacity;
+    }
+    
+    public boolean needsCollection() {
+        return needsCollection;
+    }
+    
+    public void setBroadcastRadius(int radius) {
+        this.broadcastRadius = radius;
+    }
+}

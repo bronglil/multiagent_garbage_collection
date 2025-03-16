@@ -1,0 +1,28 @@
+package garbageSimulation;
+
+import repast.simphony.space.continuous.NdPoint;
+
+
+public class CollectionRequest {
+    private TrashBin bin;
+    private NdPoint location;
+    private int fillLevel;
+    
+    public CollectionRequest(TrashBin bin, NdPoint location, int fillLevel) {
+        this.bin = bin;
+        this.location = location;
+        this.fillLevel = fillLevel;
+    }
+    
+    public TrashBin getBin() {
+        return bin;
+    }
+    
+    public NdPoint getLocation() {
+        return location;
+    }
+    
+    public int getFillLevel() {
+        return fillLevel;
+    }
+}

@@ -1,0 +1,209 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.util.ContextUtils;
+
+/**
+ * A garbage bin that broadcasts its location when fullness > 70%.
+ * Fill rates vary based on the area type (commercial, residential, low-density).
+ */
+public class GarbageBin {
+    private ContinuousSpace<Object> space;
+    private int id;
+    private double fillLevel;
+    private double capacity;
+    private boolean isBeingServiced = false;
+    
+    // Service timing
+    private long serviceStartTime = 0;
+    private static final long SERVICE_TIMEOUT = 10000; // 10 seconds timeout
+    
+    // Area type constants
+    public static final String AREA_COMMERCIAL = "COMMERCIAL";
+    public static final String AREA_RESIDENTIAL = "RESIDENTIAL";
+    public static final String AREA_LOW_DENSITY = "LOW_DENSITY";
+    
+    // The type of area this bin is located in
+    private String areaType;
+    
+    // Broadcast radius - vehicles within this range will receive bin signals
+    private static final double BROADCAST_RADIUS = 20.0; // Increased from 15.0
+    
+    // Fullness threshold for broadcasting (70%)
+    private static final double FULLNESS_THRESHOLD = 0.7;
+    
+    // Track last broadcast time to avoid spamming
+    private long lastBroadcastTime = 0;
+    private static final long BROADCAST_COOLDOWN = 3000; // 3 seconds between broadcasts
+    
+    public GarbageBin(ContinuousSpace<Object> space, int id, double capacity, String areaType) {
+        this.space = space;
+        this.id = id;
+        this.capacity = capacity;
+        this.areaType = areaType;
+        
+        // Initial fill level based on area type
+        switch (areaType) {
+            case AREA_COMMERCIAL:
+                this.fillLevel = capacity * 0.6; // Commercial areas start more full (60%)
+                break;
+            case AREA_RESIDENTIAL:
+                this.fillLevel = capacity * 0.5; // Residential areas start medium full (50%)
+                break;
+            case AREA_LOW_DENSITY:
+                this.fillLevel = capacity * 0.3; // Low density areas start less full (30%)
+                break;
+            default:
+                this.fillLevel = capacity * 0.5; // Default to 50%
+                break;
+        }
+    }
+    
+    @ScheduledMethod(start = 1, interval = 5) // Broadcast every 5 ticks
+    public void broadcastStatus() {
+        // Check for service timeout
+        if (isBeingServiced && System.currentTimeMillis() - serviceStartTime > SERVICE_TIMEOUT) {
+            System.out.println("Garbage Bin " + id + " (" + areaType + ") service timeout - resetting service flag");
+            isBeingServiced = false;
+        }
+        
+        // Only broadcast if:
+        // 1. Bin is above the fullness threshold
+        // 2. Not already being serviced
+        // 3. Enough time has passed since last broadcast
+        double fillPercentage = fillLevel / capacity;
+        
+        if (fillPercentage >= FULLNESS_THRESHOLD && !isBeingServiced && 
+            System.currentTimeMillis() - lastBroadcastTime >= BROADCAST_COOLDOWN) {
+            
+            NdPoint myPoint = space.getLocation(this);
+            Context<Object> context = ContextUtils.getContext(this);
+            
+            // Check for vehicles in broadcast range
+            boolean vehicleInRange = false;
+            
+            for (Object obj : context) {
+                if (obj instanceof Vehicle) {
+                    Vehicle vehicle = (Vehicle) obj;
+                    NdPoint vehiclePoint = space.getLocation(vehicle);
+                    double distance = space.getDistance(myPoint, vehiclePoint);
+                    
+                    if (distance <= BROADCAST_RADIUS) {
+                        // Create bin status message
+                        String content = "BIN_STATUS:" + id + ":" + myPoint.getX() + ":" + myPoint.getY() 
+                                       + ":" + fillLevel + ":" + capacity + ":" + areaType;
+                        Message binMsg = new Message(id, "BIN_BROADCAST", content);
+                        
+                        // Send to vehicle
+                        vehicle.receiveMessage(binMsg);
+                        vehicleInRange = true;
+                        
+                        System.out.println("Bin " + id + " (" + areaType + ") broadcasting to Vehicle " + vehicle.getId() 
+                                         + " at distance " + String.format("%.2f", distance));
+                    }
+                }
+            }
+            
+            if (vehicleInRange) {
+                System.out.println("Garbage Bin " + id + " (" + areaType + ") is " + String.format("%.1f", fillPercentage*100) 
+                                 + "% full (above " + FULLNESS_THRESHOLD*100 + "% threshold) and broadcasting for collection!");
+                lastBroadcastTime = System.currentTimeMillis();
+            }
+        }
+    }
+    
+    @ScheduledMethod(start = 10, interval = 20) // Fill at different rates based on area type
+    public void addGarbage() {
+        // Skip if being serviced
+        if (isBeingServiced) return;
+        
+        // Fill rate based on area type
+        double fillRate = 0;
+        switch (areaType) {
+            case AREA_COMMERCIAL:
+                // Commercial areas fill faster (up to 10% of capacity)
+                fillRate = capacity * 0.10 * (0.7 + Math.random() * 0.6); // 7-13% of capacity
+                break;
+            case AREA_RESIDENTIAL:
+                // Residential areas fill at medium rate (up to 5% of capacity)
+                fillRate = capacity * 0.05 * (0.7 + Math.random() * 0.6); // 3.5-7.5% of capacity
+                break;
+            case AREA_LOW_DENSITY:
+                // Low density areas fill slower (up to 2% of capacity)
+                fillRate = capacity * 0.02 * (0.7 + Math.random() * 0.6); // 1.4-3% of capacity
+                break;
+            default:
+                // Default fill rate
+                fillRate = capacity * 0.05 * Math.random(); // Up to 5% of capacity
+                break;
+        }
+        
+        // Add garbage
+        fill(fillRate);
+        
+        // Log area-specific message when bin is getting full
+        double fillPercentage = fillLevel / capacity;
+        if (fillPercentage >= 0.65 && fillPercentage < 0.7) {
+            System.out.println("Garbage Bin " + id + " (" + areaType + ") filling up quickly, currently at " 
+                              + String.format("%.1f", fillPercentage*100) + "%");
+        }
+    }
+    
+    public void emptyBin() {
+        this.fillLevel = 0;
+        this.isBeingServiced = false;
+        System.out.println("Garbage Bin " + id + " (" + areaType + ") has been emptied");
+    }
+    
+    public void markAsBeingServiced() {
+        this.isBeingServiced = true;
+        this.serviceStartTime = System.currentTimeMillis();
+        System.out.println("Garbage Bin " + id + " (" + areaType + ") is now marked for service");
+    }
+    
+    public void fill(double amount) {
+        // For simulation purposes, bin fills up over time
+        double oldFillLevel = fillLevel;
+        fillLevel = Math.min(capacity, fillLevel + amount);
+        
+        // Log when bin exceeds the threshold
+        double oldFillPercentage = oldFillLevel / capacity;
+        double newFillPercentage = fillLevel / capacity;
+        
+        if (oldFillPercentage < FULLNESS_THRESHOLD && newFillPercentage >= FULLNESS_THRESHOLD) {
+            System.out.println("Garbage Bin " + id + " (" + areaType + ") has just crossed the " + 
+                              (FULLNESS_THRESHOLD * 100) + "% threshold! Fill rate is higher in this area type.");
+        }
+    }
+    
+    public int getId() {
+        return id;
+    }
+    
+    public double getFillLevel() {
+        return fillLevel;
+    }
+    
+    public double getCapacity() {
+        return capacity;
+    }
+    
+    public double getFillPercentage() {
+        return (fillLevel / capacity) * 100;
+    }
+    
+    public boolean isFull() {
+        return (fillLevel / capacity) >= FULLNESS_THRESHOLD;
+    }
+    
+    public boolean isBeingServiced() {
+        return isBeingServiced;
+    }
+    
+    public String getAreaType() {
+        return areaType;
+    }
+}

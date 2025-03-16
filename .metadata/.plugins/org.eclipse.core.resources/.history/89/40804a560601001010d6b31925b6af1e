@@ -1,0 +1,82 @@
+package garbageSimulation;
+
+import repast.simphony.space.continuous.NdPoint;
+
+/**
+ * Represents a request from a trash bin to a garbage truck for collection
+ */
+public class CollectionRequest {
+    private TrashBin bin;
+    private NdPoint location;
+    private int fillLevel;
+    private long requestTime;
+    private int priority;
+    
+    /**
+     * Creates a new collection request
+     * @param bin The trash bin requesting collection
+     * @param location The location of the trash bin
+     * @param fillLevel The current fill level of the bin
+     */
+    public CollectionRequest(TrashBin bin, NdPoint location, int fillLevel) {
+        this.bin = bin;
+        this.location = location;
+        this.fillLevel = fillLevel;
+        this.requestTime = System.currentTimeMillis();
+        
+        // Calculate priority based on fill level and wait time
+        calculatePriority();
+    }
+    
+    /**
+     * Calculates the priority of this request
+     * Higher numbers indicate higher priority
+     */
+    public void calculatePriority() {
+        // Base priority on fill percentage
+        double fillPercentage = (double) fillLevel / bin.getCapacity();
+        
+        // Priority levels:
+        // 0-50% fill: Low priority (1)
+        // 51-75% fill: Medium priority (2)
+        // 76-90% fill: High priority (3)
+        // 91-100% fill: Critical priority (4)
+        
+        if (fillPercentage > 0.9) {
+            priority = 4; // Critical
+        } else if (fillPercentage > 0.75) {
+            priority = 3; // High
+        } else if (fillPercentage > 0.5) {
+            priority = 2; // Medium
+        } else {
+            priority = 1; // Low
+        }
+    }
+    
+    // Getters
+    public TrashBin getBin() {
+        return bin;
+    }
+    
+    public NdPoint getLocation() {
+        return location;
+    }
+    
+    public int getFillLevel() {
+        return fillLevel;
+    }
+    
+    public long getRequestTime() {
+        return requestTime;
+    }
+    
+    public int getPriority() {
+        return priority;
+    }
+    
+    @Override
+    public String toString() {
+        return "Request from bin at " + location + ", fill level: " + fillLevel + 
+               ", priority: " + priority;
+    }
+}

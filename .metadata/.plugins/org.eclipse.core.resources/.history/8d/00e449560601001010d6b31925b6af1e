@@ -1,0 +1,396 @@
+package garbageSimulation;
+
+import java.util.List;
+import java.util.UUID;
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.space.grid.Grid;
+import repast.simphony.util.ContextUtils;
+
+/**
+ * Class representing a garbage collection vehicle with inter-truck communication
+ */
+public class GarbageTruck {
+    private String truckId;
+    private ContinuousSpace<Object> space;
+    private Grid<Object> grid;
+    private int capacity;
+    private int currentLoad;
+    private boolean isCollecting;
+    private TrashBin currentTarget;
+    private double speed;
+    
+    // Default grid size - use this instead of parameter
+    private static final int DEFAULT_GRID_SIZE = 50;
+    
+    // Collection time (in ticks) to simulate the time it takes to empty a bin
+    private int collectionTimeRemaining;
+    private static final int COLLECTION_TIME = 3;
+    
+    // Time before evaluating new requests
+    private int communicationCooldown;
+    
+    // Truck states
+    public enum TruckState {
+        IDLE,          // No tasks, moving randomly
+        TRAVELING,     // Moving toward a bin
+        COLLECTING,    // Collecting from a bin
+        DISPOSING      // Emptying at disposal facility
+    }
+    
+    private TruckState currentState;
+    
+    public GarbageTruck(ContinuousSpace<Object> space, Grid<Object> grid, int capacity, String id) {
+        this.truckId = "Truck-" + (id != null ? id : UUID.randomUUID().toString().substring(0, 8));
+        this.space = space;
+        this.grid = grid;
+        this.capacity = capacity;
+        this.currentLoad = 0;
+        this.isCollecting = false;
+        this.currentTarget = null;
+        this.speed = 1.0;
+        this.currentState = TruckState.IDLE;
+        this.collectionTimeRemaining = 0;
+        this.communicationCooldown = 0;
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // Decrement communication cooldown
+        if (communicationCooldown > 0) {
+            communicationCooldown--;
+        }
+        
+        switch (currentState) {
+            case DISPOSING:
+                continueDisposing();
+                break;
+                
+            case COLLECTING:
+                continueCollecting();
+                break;
+                
+            case TRAVELING:
+                if (currentTarget != null) {
+                    travelToTarget();
+                } else {
+                    // No target, switch to idle
+                    currentState = TruckState.IDLE;
+                }
+                break;
+                
+            case IDLE:
+            default:
+                // If truck is full, go to disposal facility
+                if (currentLoad >= capacity * 0.9) {
+                    startDisposing();
+                }
+                // Check for collection requests
+                else if (communicationCooldown == 0) {
+                    checkForCollectionRequests();
+                    
+                    // If no assignments found, move randomly
+                    if (currentState == TruckState.IDLE) {
+                        moveRandomly();
+                    }
+                }
+                // If no specific task, move randomly
+                else {
+                    moveRandomly();
+                }
+                break;
+        }
+    }
+    
+    /**
+     * Check for collection requests in the communication system
+     */
+    private void checkForCollectionRequests() {
+        CommunicationSystem comms = CommunicationSystem.getInstance();
+        List<Message> requests = comms.getActiveCollectionRequests();
+        
+        if (requests.isEmpty()) {
+            // No active requests, continue patrolling
+            return;
+        }
+        
+        // Calculate distance to each bin in the requests
+        for (Message request : requests) {
+            // Skip if bin is already assigned to a truck
+            if (comms.isBinAssigned(request.getSenderId())) {
+                continue;
+            }
+            
+            // Calculate distance to this bin
+            NdPoint binLocation = request.getLocation();
+            NdPoint currentLocation = space.getLocation(this);
+            double distance = space.getDistance(currentLocation, binLocation);
+            
+            // Claim this request with our distance
+            comms.claimCollectionRequest(request.getMessageId(), this, distance);
+        }
+        
+        // Evaluate claims immediately
+        evaluateClaimsAndAssignments();
+        
+        // Wait a bit before checking for new requests
+        communicationCooldown = 5;
+    }
+    
+    /**
+     * Check if this truck won any bin claims
+     */
+    private void evaluateClaimsAndAssignments() {
+        CommunicationSystem comms = CommunicationSystem.getInstance();
+        List<Message> requests = comms.getActiveCollectionRequests();
+        
+        for (Message request : requests) {
+            String binId = request.getSenderId();
+            
+            // Skip if bin is already assigned
+            if (comms.isBinAssigned(binId)) {
+                continue;
+            }
+            
+            // Check if this truck is the best match for this bin
+            String bestTruckId = comms.determineBestTruck(binId);
+            if (truckId.equals(bestTruckId)) {
+                // We're the closest truck, claim this bin
+                assignToBin(binId, request.getLocation());
+                return; // Only take one assignment at a time
+            }
+        }
+        
+        // No assignments found, state remains IDLE
+    }
+    
+    /**
+     * Assign this truck to collect from a specific bin
+     */
+    private void assignToBin(String binId, NdPoint location) {
+        Context<Object> context = ContextUtils.getContext(this);
+        
+        // Find the bin object by ID
+        for (Object obj : context.getObjects(TrashBin.class)) {
+            TrashBin bin = (TrashBin) obj;
+            if (bin.getId().equals(binId)) {
+                // Assign to this bin
+                currentTarget = bin;
+                currentState = TruckState.TRAVELING;
+                
+                // Confirm the assignment in the communication system
+                CommunicationSystem.getInstance().confirmCollection(binId, this);
+                
+                System.out.println("[TRUCK] " + truckId + " assigned to bin " + binId);
+                return;
+            }
+        }
+    }
+    
+    /**
+     * Travel toward the current target
+     */
+    private void travelToTarget() {
+        // Get current location and target location
+        NdPoint currentLocation = space.getLocation(this);
+        NdPoint targetLocation = space.getLocation(currentTarget);
+        
+        // If we've reached the bin
+        if (space.getDistance(currentLocation, targetLocation) < 0.5) {
+            // Start collecting
+            startCollecting();
+        } else {
+            // Move toward bin
+            moveToward(targetLocation);
+        }
+    }
+    
+    /**
+     * Start the collection process
+     */
+    private void startCollecting() {
+        currentState = TruckState.COLLECTING;
+        collectionTimeRemaining = COLLECTION_TIME;
+        System.out.println("[TRUCK] " + truckId + " started collecting from bin " + currentTarget.getId());
+    }
+    
+    /**
+     * Continue the collection process
+     */
+    private void continueCollecting() {
+        collectionTimeRemaining--;
+        
+        if (collectionTimeRemaining <= 0) {
+            // Collection is complete
+            collectFromBin();
+        }
+    }
+    
+    /**
+     * Finalize the collection from the bin
+     */
+    private void collectFromBin() {
+        // Collect garbage from bin
+        int binFillLevel = currentTarget.getCurrentFillLevel();
+        
+        // Check if truck has enough capacity
+        if (currentLoad + binFillLevel <= capacity) {
+            // Collect all waste
+            currentLoad += binFillLevel;
+            currentTarget.empty();
+            
+            System.out.println("[TRUCK] " + truckId + " collected " + binFillLevel + 
+                              " waste units. Current load: " + currentLoad + "/" + capacity);
+        } else {
+            // Collect only what we can
+            int amountToCollect = capacity - currentLoad;
+            currentLoad = capacity;
+            
+            // This is a simplification - in a real model you might want to
+            // partially empty the bin
+            currentTarget.empty();
+            
+            System.out.println("[TRUCK] " + truckId + " is now full. Collected " + amountToCollect + 
+                              " waste units.");
+        }
+        
+        // Reset collection state
+        currentState = TruckState.IDLE;
+        currentTarget = null;
+        
+        // Reset communication cooldown
+        communicationCooldown = 0;
+        
+        // If now full, go to disposal
+        if (currentLoad >= capacity * 0.9) {
+            startDisposing();
+        }
+    }
+    
+    /**
+     * Start the disposal process
+     */
+    private void startDisposing() {
+        currentState = TruckState.DISPOSING;
+        collectionTimeRemaining = 5; // Time to dispose
+        
+        // Clear any pending tasks in the communication system
+        CommunicationSystem.getInstance().clearTruckMessages(truckId);
+        
+        System.out.println("[TRUCK] " + truckId + " heading to disposal facility. Current load: " + 
+                          currentLoad + "/" + capacity);
+    }
+    
+    /**
+     * Continue the disposal process
+     */
+    private void continueDisposing() {
+        collectionTimeRemaining--;
+        
+        if (collectionTimeRemaining <= 0) {
+            // Disposal complete
+            currentLoad = 0;
+            currentState = TruckState.IDLE;
+            
+            System.out.println("[TRUCK] " + truckId + " emptied at disposal facility. Ready for new collections.");
+        }
+    }
+    
+    /**
+     * Move toward a specific point
+     */
+    private void moveToward(NdPoint targetLocation) {
+        // Get current location
+        NdPoint currentLocation = space.getLocation(this);
+        
+        // Calculate direction vector
+        double[] direction = new double[2];
+        direction[0] = targetLocation.getX() - currentLocation.getX();
+        direction[1] = targetLocation.getY() - currentLocation.getY();
+        
+        // Normalize direction vector
+        double length = Math.sqrt(direction[0] * direction[0] + direction[1] * direction[1]);
+        direction[0] /= length;
+        direction[1] /= length;
+        
+        // Scale by speed
+        direction[0] *= speed;
+        direction[1] *= speed;
+        
+        // Calculate new position
+        double newX = currentLocation.getX() + direction[0];
+        double newY = currentLocation.getY() + direction[1];
+        
+        // Move in space
+        space.moveTo(this, newX, newY);
+        
+        // Move in grid - grid requires integer coordinates
+        grid.moveTo(this, (int) Math.round(newX), (int) Math.round(newY));
+    }
+    
+    /**
+     * Move in a random direction
+     */
+    private void moveRandomly() {
+        // Get current location
+        NdPoint currentLocation = space.getLocation(this);
+        
+        // Generate random direction
+        double angle = RandomHelper.nextDoubleFromTo(0, 2 * Math.PI);
+        double dx = Math.cos(angle);
+        double dy = Math.sin(angle);
+        
+        // Scale by speed
+        double randomSpeed = speed * 0.5; // Move slower when wandering
+        dx *= randomSpeed;
+        dy *= randomSpeed;
+        
+        // Calculate new position
+        double newX = currentLocation.getX() + dx;
+        double newY = currentLocation.getY() + dy;
+        
+        // Ensure we stay within bounds using default grid size
+        int gridSize = DEFAULT_GRID_SIZE;
+        
+        newX = Math.max(0, Math.min(gridSize - 1, newX));
+        newY = Math.max(0, Math.min(gridSize - 1, newY));
+        
+        // Move in space
+        space.moveTo(this, newX, newY);
+        
+        // Move in grid
+        grid.moveTo(this, (int) Math.round(newX), (int) Math.round(newY));
+    }
+    
+    /**
+     * Get truck's current state
+     */
+    public TruckState getCurrentState() {
+        return currentState;
+    }
+    
+    /**
+     * Get truck's current load
+     */
+    public int getCurrentLoad() {
+        return currentLoad;
+    }
+    
+    /**
+     * Get truck's capacity
+     */
+    public int getCapacity() {
+        return capacity;
+    }
+    
+    /**
+     * Get truck's ID
+     */
+    public String getTruckId() {
+        return truckId;
+    }
+}

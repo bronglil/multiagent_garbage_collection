@@ -1,0 +1,107 @@
+package garbageSimulation;
+
+import repast.simphony.context.Context;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactory;
+import repast.simphony.context.space.continuous.ContinuousSpaceFactoryFinder;
+import repast.simphony.context.space.grid.GridFactory;
+import repast.simphony.context.space.grid.GridFactoryFinder;
+import repast.simphony.dataLoader.ContextBuilder;
+import repast.simphony.engine.environment.RunEnvironment;
+import repast.simphony.parameter.Parameters;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.space.continuous.RandomCartesianAdder;
+import repast.simphony.space.grid.Grid;
+import repast.simphony.space.grid.GridBuilderParameters;
+import repast.simphony.space.grid.SimpleGridAdder;
+import repast.simphony.space.grid.WrapAroundBorders;
+
+/**
+ * Builds the garbage collection simulation context
+ */
+public class GarbageCollectionBuilder implements ContextBuilder<Object> {
+
+    @Override
+    public Context<Object> build(Context<Object> context) {
+        // Define constants if parameters are not available
+        final int GRID_SIZE = 50;
+        final int NUM_BINS = 9;
+        final int NUM_TRUCKS = 3;
+        final int BIN_CAPACITY = 100;
+        final int TRUCK_CAPACITY = 500;
+        
+        // Get parameter values if available (with default fallbacks)
+        Parameters params = RunEnvironment.getInstance().getParameters();
+        int gridSize = GRID_SIZE;
+        int numBins = NUM_BINS;
+        int numTrucks = NUM_TRUCKS;
+        
+        try {
+            // Try to get parameters, use defaults if not found
+            gridSize = params.getInteger("gridSize");
+        } catch (Exception e) {
+            System.out.println("Using default gridSize: " + gridSize);
+        }
+        
+        try {
+            numBins = params.getInteger("numBins");
+        } catch (Exception e) {
+            System.out.println("Using default numBins: " + numBins);
+        }
+        
+        try {
+            numTrucks = params.getInteger("numTrucks");
+        } catch (Exception e) {
+            System.out.println("Using default numTrucks: " + numTrucks);
+        }
+        
+        // Set a stop time
+        RunEnvironment.getInstance().endAt(1000);
+        
+        // Create continuous space and grid
+        ContinuousSpaceFactory spaceFactory = ContinuousSpaceFactoryFinder.createContinuousSpaceFactory(null);
+        ContinuousSpace<Object> space = spaceFactory.createContinuousSpace(
+                "space", context, new RandomCartesianAdder<Object>(),
+                new repast.simphony.space.continuous.WrapAroundBorders(), gridSize, gridSize);
+        
+        GridFactory gridFactory = GridFactoryFinder.createGridFactory(null);
+        Grid<Object> grid = gridFactory.createGrid(
+                "grid", context, new GridBuilderParameters<Object>(
+                        new WrapAroundBorders(), new SimpleGridAdder<Object>(),
+                        true, gridSize, gridSize));
+        
+        // Create trash bins
+        for (int i = 0; i < numBins; i++) {
+            // Random fill rate between 3 and 8 units per tick
+            int fillRate = RandomHelper.nextIntFromTo(3, 8);
+            TrashBin bin = new TrashBin(space, grid, BIN_CAPACITY, fillRate);
+            context.add(bin);
+            
+            // Place randomly in the space and grid
+            int x = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            int y = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            space.moveTo(bin, x, y);
+            grid.moveTo(bin, x, y);
+        }
+        
+        // Create garbage trucks
+        for (int i = 0; i < numTrucks; i++) {
+            GarbageTruck truck = new GarbageTruck(space, grid, TRUCK_CAPACITY, "Truck-" + i);
+            context.add(truck);
+            
+            // Place randomly in the space and grid
+            int x = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            int y = RandomHelper.nextIntFromTo(0, gridSize - 1);
+            space.moveTo(truck, x, y);
+            grid.moveTo(truck, x, y);
+        }
+        
+        System.out.println("Simulation initialized with:");
+        System.out.println("  - Grid Size: " + gridSize + "x" + gridSize);
+        System.out.println("  - Trash Bins: " + numBins);
+        System.out.println("  - Garbage Trucks: " + numTrucks);
+        
+        return context;
+    }
+}

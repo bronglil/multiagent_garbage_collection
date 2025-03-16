@@ -1,0 +1,188 @@
+package garbageSimulation;
+
+
+import repast.simphony.context.Context;
+import repast.simphony.engine.environment.RunEnvironment;
+import repast.simphony.engine.schedule.ScheduledMethod;
+import repast.simphony.parameter.Parameters;
+import repast.simphony.random.RandomHelper;
+import repast.simphony.space.continuous.ContinuousSpace;
+import repast.simphony.space.continuous.NdPoint;
+import repast.simphony.space.grid.Grid;
+import repast.simphony.util.ContextUtils;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Class representing a garbage collection vehicle
+ */
+public class GarbageTruck {
+    private ContinuousSpace<Object> space;
+    private Grid<Object> grid;
+    private int capacity;
+    private int currentLoad;
+    private List<CollectionRequest> collectionQueue;
+    private boolean isCollecting;
+    private TrashBin currentTarget;
+    
+    public GarbageTruck(ContinuousSpace<Object> space, Grid<Object> grid, int capacity) {
+        this.space = space;
+        this.grid = grid;
+        this.capacity = capacity;
+        this.currentLoad = 0;
+        this.collectionQueue = new ArrayList<>();
+        this.isCollecting = false;
+        this.currentTarget = null;
+    }
+    
+    @ScheduledMethod(start = 1, interval = 1)
+    public void step() {
+        // If truck is full, go to disposal facility
+        if (currentLoad >= capacity * 0.9) {
+            goToDisposalFacility();
+            return;
+        }
+        
+        // If currently collecting from a bin
+        if (isCollecting && currentTarget != null) {
+            collectFromBin();
+            return;
+        }
+        
+        // If there are pending collection requests
+        if (!collectionQueue.isEmpty()) {
+            processNextCollectionRequest();
+            return;
+        }
+        
+        // If no specific task, move randomly
+        moveRandomly();
+    }
+    
+    /**
+     * Processes a collection request from a bin
+     */
+    public void receiveCollectionRequest(TrashBin bin, NdPoint location, int fillLevel) {
+        // Add request to queue based on priority (fill level)
+        CollectionRequest request = new CollectionRequest(bin, location, fillLevel);
+        
+        // Simple prioritization - add higher fill levels at front of queue
+        if (fillLevel > capacity * 0.9) {
+            collectionQueue.add(0, request); // High priority
+        } else {
+            collectionQueue.add(request); // Normal priority
+        }
+    }
+    
+    private void processNextCollectionRequest() {
+        if (collectionQueue.isEmpty()) return;
+        
+        // Get next request
+        CollectionRequest request = collectionQueue.get(0);
+        collectionQueue.remove(0);
+        
+        // Set current target
+        currentTarget = request.getBin();
+        
+        // Move toward bin
+        NdPoint currentLocation = space.getLocation(this);
+        NdPoint targetLocation = request.getLocation();
+        
+        // If we've reached the bin
+        if (space.getDistance(currentLocation, targetLocation) < 0.5) {
+            isCollecting = true;
+        } else {
+            // Move toward bin
+            moveToward(targetLocation);
+        }
+    }
+    
+    private void collectFromBin() {
+        // Collect garbage from bin
+        int binFillLevel = currentTarget.getCurrentFillLevel();
+        
+        // Check if truck has enough capacity
+        if (currentLoad + binFillLevel <= capacity) {
+            currentLoad += binFillLevel;
+            currentTarget.empty();
+        } else {
+            // Collect what we can
+            int amountToCollect = capacity - currentLoad;
+            currentLoad = capacity;
+            // Reduce bin level - this is a simplification
+        }
+        
+        // Reset collection state
+        isCollecting = false;
+        currentTarget = null;
+    }
+    
+    private void goToDisposalFacility() {
+        // For simplicity, just empty the truck
+        currentLoad = 0;
+    }
+    
+    private void moveToward(NdPoint targetLocation) {
+        // Get current location
+        NdPoint currentLocation = space.getLocation(this);
+        
+        // Calculate direction vector
+        double[] direction = new double[2];
+        direction[0] = targetLocation.getX() - currentLocation.getX();
+        direction[1] = targetLocation.getY() - currentLocation.getY();
+        
+        // Normalize direction vector
+        double length = Math.sqrt(direction[0] * direction[0] + direction[1] * direction[1]);
+        direction[0] /= length;
+        direction[1] /= length;
+        
+        // Scale by speed
+        double speed = 1.0;
+        direction[0] *= speed;
+        direction[1] *= speed;
+        
+        // Calculate new position
+        double newX = currentLocation.getX() + direction[0];
+        double newY = currentLocation.getY() + direction[1];
+        
+        // Move in space
+        space.moveTo(this, newX, newY);
+        
+        // Move in grid - grid requires integer coordinates
+        grid.moveTo(this, (int) Math.round(newX), (int) Math.round(newY));
+    }
+    
+    private void moveRandomly() {
+        // Get current location
+        NdPoint currentLocation = space.getLocation(this);
+        
+        // Generate random direction
+        double angle = RandomHelper.nextDoubleFromTo(0, 2 * Math.PI);
+        double dx = Math.cos(angle);
+        double dy = Math.sin(angle);
+        
+        // Scale by speed
+        double speed = 0.5;
+        dx *= speed;
+        dy *= speed;
+        
+        // Calculate new position
+        double newX = currentLocation.getX() + dx;
+        double newY = currentLocation.getY() + dy;
+        
+        // Ensure we stay within bounds (assuming grid size)
+        Context<Object> context = ContextUtils.getContext(this);
+        Parameters params = RunEnvironment.getInstance().getParameters();
+        int gridSize = (Integer) params.getValue("gridSize");
+        
+        newX = Math.max(0, Math.min(gridSize - 1, newX));
+        newY = Math.max(0, Math.min(gridSize - 1, newY));
+        
+        // Move in space
+        space.moveTo(this, newX, newY);
+        
+        // Move in grid
+        grid.moveTo(this, (int) Math.round(newX), (int) Math.round(newY));
+    }
+}
